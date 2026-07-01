@@ -1,0 +1,69 @@
+<mujoco model="reaction_wheel_bicycle">
+  <compiler angle="degree" autolimits="true"/>
+  <option timestep="0.004" integrator="implicitfast" gravity="0 0 -9.81"/>
+
+  <default>
+    <joint damping="0.02" armature="0.0005"/>
+    <geom contype="1" conaffinity="1" friction="1.0 0.005 0.0001"/>
+    <default class="wheel">
+      <geom type="cylinder" fromto="0 -0.025 0  0 0.025 0" size="0.30"
+            rgba="0.15 0.15 0.15 1" friction="1.4 0.01 0.001"/>
+    </default>
+    <default class="flywheel">
+      <geom type="cylinder" rgba="0.85 0.2 0.2 1" contype="0" conaffinity="0"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="ground" type="plane" size="0 0 0.05" rgba="0.55 0.55 0.55 1"/>
+
+    <!-- frame: free joint so it can lean / fall -->
+    <body name="frame" pos="0 0 0.30">
+      <freejoint name="root"/>
+      <site name="imu" pos="0.5 0 0.10"/>
+
+      <!-- main frame + rider mass (CoM raised) -->
+      <geom name="downtube" type="capsule" fromto="0 0 0  1.0 0 0.05" size="0.025" mass="3"/>
+      <geom name="seattube" type="capsule" fromto="0.5 0 0.05  0.5 0 0.45" size="0.022" mass="1"/>
+      <geom name="rider"    type="sphere"  pos="0.5 0 0.50" size="0.09" mass="4" rgba="0.9 0.7 0.2 1"/>
+
+      <!-- rear wheel (driven) -->
+      <body name="rear_wheel" pos="0 0 0">
+        <joint name="rear_spin" type="hinge" axis="0 1 0"/>
+        <geom class="wheel" name="rear_geom" mass="1.2"/>
+      </body>
+
+      <!-- reaction wheel: spin axis = x (roll/lean axis) -->
+      <body name="reaction_wheel" pos="0.5 0 0.25">
+        <joint name="flywheel" type="hinge" axis="1 0 0"/>
+        <geom class="flywheel" name="flywheel_geom"
+              fromto="-0.02 0 0  0.02 0 0" size="0.13" mass="2.5"/>
+      </body>
+
+      <!-- steering fork + front wheel (vertical steer axis for v1) -->
+      <body name="fork" pos="1.0 0 0.05">
+        <joint name="steer" type="hinge" axis="0 0 1"/>
+        <geom name="fork_geom" type="capsule" fromto="0 0 0  0 0 -0.05" size="0.022" mass="0.6"/>
+        <body name="front_wheel" pos="0 0 -0.05">
+          <joint name="front_spin" type="hinge" axis="0 1 0"/>
+          <geom class="wheel" name="front_geom" mass="1.2"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="flywheel_torque" joint="flywheel"  ctrlrange="-10 10"/>
+    <motor name="steer_torque"    joint="steer"     ctrlrange="-3 3"/>
+    <motor name="rear_drive"      joint="rear_spin" ctrlrange="-4 4"/>
+  </actuator>
+
+  <sensor>
+    <framezaxis  name="frame_up"    objtype="site" objname="imu"/>
+    <gyro        name="imu_gyro"    site="imu"/>
+    <accelerometer name="imu_acc"   site="imu"/>
+    <jointvel    name="flywheel_w"  joint="flywheel"/>
+    <jointvel    name="rear_w"      joint="rear_spin"/>
+  </sensor>
+</mujoco>
