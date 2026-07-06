@@ -56,6 +56,13 @@
     </body>
   </worldbody>
 
+  <!-- downtube 끝단이 앞바퀴 내부를 관통(-33mm)하는데 frame↔front_wheel은
+       조부모-손자 관계라 자동 접촉제외가 안 됨 → 1.9kN 상시 브레이크로 작용했음.
+       (부모-자식만 자동 제외되는 MuJoCo filterparent 규칙) -->
+  <contact>
+    <exclude body1="frame" body2="front_wheel"/>
+  </contact>
+
   <actuator>
     <motor name="flywheel_torque" joint="flywheel"  ctrlrange="-10 10"/>
     <motor name="steer_torque"    joint="steer"     ctrlrange="-3 3"/>
