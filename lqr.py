@@ -116,12 +116,10 @@ if __name__ == "__main__":
     print(f"   kd_lean = {K[1]:+.4f}")
     print(f"   kw_fw   = {K[2]:+.5f}")
 
-    # 중요: flywheel-only LQR 단독으로는 못 선다.
-    #   free-castering 앞포크 때문에 roll↔yaw↔steer 결합이 커져서 스파이럴로 넘어짐.
-    #   → 조향 yaw-hold 루프(kp_yaw,kd_yaw)를 얹어야 안정. 아래는 검증된 값:
-    #   섭동 5°까지 정지/주행(2m/s) 모두 20s 유지 (8°에서 토크 포화로 실패).
+    # balance=LQR K + 조향(예측 lean 카운터스티어 + 센터링) + 속도 PI.
+    # trail 74mm + 유령브레이크 제거 플랜트에서 검증:
+    #   정지 균형 / 정지출발→2m/s 추종(4s) / 주행 균형 모두 20s 완주 (2° 섭동).
     full = dict(kp_lean=float(K[0]), kd_lean=float(K[1]), kw_fw=float(K[2]),
-                k_lat=0.0, kp_yaw=10.0, kd_yaw=2.0, kp_v=2.0, ki_v=0.5)
+                k_ls=-2.0, kp_steer=2.0, kd_steer=0.5, kp_v=2.0, ki_v=0.5)
     json.dump(full, open("lqr_gains.json", "w"), indent=2)
-    print("\n-> lqr_gains.json 저장 (balance=LQR, heading=yaw-hold 10/2)")
-    print("   주의: balance-only 는 못 섬 — 조향 yaw-hold 필수 (roll↔yaw 결합 차단)")
+    print("\n-> lqr_gains.json 저장 (balance=LQR, steer=lean예측+센터링, speed=PI)")

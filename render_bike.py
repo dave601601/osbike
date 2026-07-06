@@ -47,12 +47,13 @@ if HALFWIDTH:
                       f'fromto="0 -{HALFWIDTH} 0  0 {HALFWIDTH} 0"')
 rm = mujoco.MjModel.from_xml_string(xml)   # render model (checker floor)
 
-# --- gains: LQR balance + yaw-hold; add speed PI only when driving ---
-K, _ = lqr.flywheel_balance()
-drive = V_TARGET > 1e-6
-G = C.Gains(float(K[0]), float(K[1]), float(K[2]),
-            0.0, 10.0, 2.0,
-            2.0 if drive else 0.0, 0.5 if drive else 0.0)
+# --- gains: lqr_gains.json 단일 소스 (없으면 python lqr.py 로 생성) ---
+import json
+if os.path.exists("lqr_gains.json"):
+    G = C.Gains(**json.load(open("lqr_gains.json")))
+else:
+    K, _ = lqr.flywheel_balance()
+    G = C.Gains(float(K[0]), float(K[1]), float(K[2]), -2.0, 2.0, 0.5, 2.0, 0.5)
 
 d = mujoco.MjData(rm)
 a = np.radians(2.0) / 2

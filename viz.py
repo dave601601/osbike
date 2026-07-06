@@ -10,18 +10,15 @@ import controller as C
 
 V_TARGET = 2.0
 
-# 우선순위: lqr_gains.json(LQR 균형+yaw-hold) > best_gains.json(랜덤서치) > 손 gain
+# lqr_gains.json(LQR 균형 + lean예측 조향 + 속도PI) 우선, 없으면 검증값 하드코딩
 if os.path.exists("lqr_gains.json"):
     G = C.Gains(**json.load(open("lqr_gains.json")))
-    print("lqr_gains.json 로드 (LQR balance + yaw-hold)")
-elif os.path.exists("best_gains.json"):
-    G = C.Gains(**json.load(open("best_gains.json")))
-    print("best_gains.json 로드")
+    print("lqr_gains.json 로드")
 else:
-    G = C.Gains(kp_lean=40., kd_lean=4., kw_fw=0.01,
-                k_lat=2., kp_yaw=5., kd_yaw=1.,
+    G = C.Gains(kp_lean=-295.74, kd_lean=-57.78, kw_fw=-0.03254,
+                k_ls=-2., kp_steer=2., kd_steer=0.5,
                 kp_v=2., ki_v=0.5)
-    print("손 gain 사용")
+    print("내장 검증 gain 사용 (python lqr.py 로 재생성 가능)")
 
 
 def main():

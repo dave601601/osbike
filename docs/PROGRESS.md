@@ -15,13 +15,14 @@
   MPC, 그리고 RL 비교 준비.
 
 ### 열린 이슈 / 다음 할 일
-- [ ] controller.heading()을 steer각 피드백(센터링+lean PD) 구조로 개편, lqr_gains.json
-  갱신, viz.py/render 복구 — 검증된 법칙을 코드베이스에 정착.
-- [ ] 오염된 정량 수치 재측정: tire_test(passive basin), 회복 한계각, self-steering 응답.
+- [x] ~~controller.py 조향법칙 정착~~ → `steer()` = 예측 lean + 센터링, 실코드 경로 3종 검증.
+- [x] ~~오염 수치 재측정~~ → 정지한계 7°(이론 8.4° 정합), **주행 2m/s는 10°+ 회복**,
+  self-steering 물리 정상(기운 쪽), 타이어 basin 결론 유지.
 - [ ] free-fork 연구 타겟 전환: steer 모터 제거 + moving-mass 추가 (trail 준비됨).
   새 body 추가 시 d.ncon 덤프로 내부 접촉 확인 (유령 브레이크 재발 방지).
 - [ ] MIMO LQR (선택): 손튜닝 항(k_ls, 센터링) 원리적 대체 + 성능 한계 탐색용.
 - [ ] 조향 감쇠/frictionloss 현실화 (제안서 2단계 system ID 항목과 연결).
+- [ ] passive 자가안정 속도창 스윕 (2m/s엔 없음 — 3~6m/s 탐색, Whipple 비교).
 - [ ] 연구제안서(`2026 Work Station ...`) 내용과 코드 매핑 정리.
 
 ## Index (태스크별 상세 — 최신 항목은 각 파일 상단)
