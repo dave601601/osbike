@@ -1,5 +1,32 @@
 # 플랜트 / passive 안정성
 
+## 2026-07-07 — 조향축 12° caster 추가 (trail 74mm): self-steering 생성, 주행균형 달성
+
+### 결론
+v1의 수직 조향축(trail=0)이 포크잼·주행균형 실패·self-steering 부재의 공통 원인이었다.
+조향축을 12° 후경(`axis="-0.2079 0 0.9781"`) → **trail 74.4mm 실측**(실차 투어링급).
+
+### 검증 (2° 섭동, 20s 호라이즌)
+1. **Self-steering 생성 [B]**: 완전 무제어에서 포크가 lean 쪽으로 스스로 꺾임
+   (0.2s에 +14~46°, v0=0~4 전부 부호 일치). 제안서 핵심 메커니즘이 시뮬에 존재하게 됨.
+   단 조향 감쇠가 작아(0.02) 스톱(45°)까지 오버슛 → passive 단독으론 여전히 낙하
+   (자가안정 속도창 없음). 조향 frictionloss/damper 추가 검토 여지.
+2. **주행균형 달성 [C]**: lean→steer PD(+센터링+감쇠) `u_st=k_ls·lean+(k_ls/4)·roll̇−2·steer−0.5·steeṙ`
+   + 플라이휠 LQR + 속도PI 조합, **여러 셀이 5000/5000 (20s) STABLE**, max|steer|≤17°(잼 없음):
+   발사 v0=2: k_ls=−2, +2 STABLE / 정지출발: k_ls=−5, −2 STABLE.
+   trail 이전 최고는 11.4s+포크 46° 포화였음.
+3. **포크잼 해소 [D]**: 구 드라이브 설정에서 steer가 더는 45°에 안 박힘(max 34°),
+   v_fwd 0.18→0.55. 단 stale yaw-hold gain 때문에 9.1s에 낙하.
+4. **회귀 [A]**: 구 정지균형 설정(LQR+yaw-hold 10/2)은 새 플랜트에서 **6.1s로 퇴행**
+   (wheel-flop과 yaw-hold가 상충). → yaw-hold 손 gain은 폐기 대상.
+   같은 정지 조건에서 [C]의 새 조향법칙(k_ls=−2)은 20s STABLE — 대체 확인.
+
+### 미해결
+- **속도 추종 여전히 실패**: STABLE 셀들도 v_fwd≈0.25m/s로 크롤링(목표 2). 발사해도 감속.
+  균형과 분리된 구동/저항 문제 (스크럽·구름저항 의심).
+- `lqr_gains.json`+`viz.py`의 yaw-hold 설정은 새 플랜트에서 넘어짐 — 조향법칙을
+  steer각 피드백 구조로 바꿔야 (controller.heading() 개편 or MIMO LQR).
+
 ## 2026-07-06 — 무제어 낙하 + 타이어 폭의 영향 (baseline)
 
 ### 결론

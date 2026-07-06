@@ -42,9 +42,11 @@
               fromto="-0.02 0 0  0.02 0 0" size="0.13" mass="2.5"/>
       </body>
 
-      <!-- steering fork + front wheel (vertical steer axis for v1) -->
+      <!-- steering fork + front wheel. 조향축 12° 후경(caster):
+           축이 지면과 만나는 점이 접지점보다 앞 → trail = 0.35·tan12° ≈ 74mm.
+           실차급 self-centering + lean→steer 자연 결합 (v1은 수직축=trail 0이라 포크 잼) -->
       <body name="fork" pos="1.0 0 0.05">
-        <joint name="steer" type="hinge" axis="0 0 1" range="-45 45"/>
+        <joint name="steer" type="hinge" axis="-0.2079 0 0.9781" range="-45 45"/>
         <geom name="fork_geom" type="capsule" fromto="0 0 0  0 0 -0.05" size="0.022" mass="0.6"/>
         <body name="front_wheel" pos="0 0 -0.05">
           <joint name="front_spin" type="hinge" axis="0 1 0"/>
