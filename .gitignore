@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Rendered videos / large research docs (not source)
+*.mp4
+*.docx
+*.pdf
