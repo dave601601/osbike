@@ -6,7 +6,8 @@
     <joint damping="0.02" armature="0.0005"/>
     <geom contype="1" conaffinity="1" friction="1.0 0.005 0.0001"/>
     <default class="wheel">
-      <geom type="cylinder" fromto="0 -0.025 0  0 0.025 0" size="0.30"
+      <!-- 얇은 타이어(폭 1.6cm): 접지가 점에 가까워 roll 불안정 = 진짜 균형 문제 -->
+      <geom type="cylinder" fromto="0 -0.008 0  0 0.008 0" size="0.30"
             rgba="0.15 0.15 0.15 1" friction="1.4 0.01 0.001"/>
     </default>
     <default class="flywheel">
@@ -43,7 +44,7 @@
 
       <!-- steering fork + front wheel (vertical steer axis for v1) -->
       <body name="fork" pos="1.0 0 0.05">
-        <joint name="steer" type="hinge" axis="0 0 1"/>
+        <joint name="steer" type="hinge" axis="0 0 1" range="-45 45"/>
         <geom name="fork_geom" type="capsule" fromto="0 0 0  0 0 -0.05" size="0.022" mass="0.6"/>
         <body name="front_wheel" pos="0 0 -0.05">
           <joint name="front_spin" type="hinge" axis="0 1 0"/>
