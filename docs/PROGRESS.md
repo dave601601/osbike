@@ -1,8 +1,16 @@
 # PROGRESS
 
-리액션휠 자전거 자율균형 — 진행 현황 단일 소스. (git=무엇이 바뀌었나, 여기=지금 어디인가)
+자전거 자율균형 (제안서: 저속 moving-mass + free-fork RL vs 고전) — 진행 현황 단일 소스.
 
 ## Open (현재 상태 스냅샷)
+
+- **연구 타겟 플랜트 가동**: `moving_mass_bicycle.xml` (free fork + 2kg/±0.15m 슬라이더).
+  4-state LQR로 **v≥0.5 m/s 주행 균형 20s 성공** (self-steering 동원 확인).
+  **v=0은 힘/스트로크 제약 지배로 LQR 불가** — MPC/RL 명분. 설계영역 1차: 추는
+  가벼울수록 유리(반직관), 최적 2kg×0.15m. 상세: [mm](progress/mm.md).
+- 다음 본론: **PPO/SAC 학습 → LQR과 동일 지표 비교** (v_min, 회복한계, 외란).
+
+### reaction-wheel 스캐폴드 (완료 상태)
 
 - **플랜트 v2.1**: trail 74mm(caster 12°) + **frame↔front_wheel 접촉 제외**(1.9kN 유령
   브레이크 제거 — 초기 커밋부터 있던 버그, 모든 구동 문제의 진범이었음).
@@ -27,5 +35,6 @@
 
 ## Index (태스크별 상세 — 최신 항목은 각 파일 상단)
 
-- [lqr](progress/lqr.md) — LQR 균형+yaw-hold 로 20s 성공. 다음은 MIMO LQR.
-- [plant](progress/plant.md) — 유령 브레이크(frame↔앞바퀴 1.9kN) 제거로 속도추종까지 전부 해결. trail 74mm.
+- [mm](progress/mm.md) — **연구 타겟**: free-fork+moving-mass, v≥0.5 균형 성공 / v=0 제약 지배 실패 / 설계영역 1차.
+- [lqr](progress/lqr.md) — (스캐폴드) LQR 플라이휠 균형 설계 과정.
+- [plant](progress/plant.md) — (스캐폴드) 유령 브레이크 제거·trail 74mm·재측정.
