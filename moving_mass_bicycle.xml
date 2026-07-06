@@ -1,0 +1,82 @@
+<mujoco model="moving_mass_bicycle">
+  <!-- 제안서 타겟 플랜트: free fork(조향 무구동) + lateral moving mass, 저속 균형.
+       reaction_wheel_bicycle.xml 에서 파생: trail 74mm 포크·얇은 타이어·접촉제외 유지,
+       리액션휠/조향모터 제거, 안장 위 횡방향 무게추 슬라이더 추가. -->
+  <compiler angle="degree" autolimits="true"/>
+  <option timestep="0.004" integrator="implicitfast" gravity="0 0 -9.81"/>
+
+  <default>
+    <joint damping="0.02" armature="0.0005"/>
+    <geom contype="1" conaffinity="1" friction="1.0 0.005 0.0001"/>
+    <default class="wheel">
+      <!-- 얇은 타이어(폭 1.6cm): 접지가 점에 가까워 roll 불안정 = 진짜 균형 문제 -->
+      <geom type="cylinder" fromto="0 -0.008 0  0 0.008 0" size="0.30"
+            rgba="0.15 0.15 0.15 1" friction="1.4 0.01 0.001"/>
+    </default>
+    <default class="noncolliding">
+      <geom contype="0" conaffinity="0"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="ground" type="plane" size="0 0 0.05" rgba="0.55 0.55 0.55 1"/>
+
+    <body name="frame" pos="0 0 0.30">
+      <freejoint name="root"/>
+      <site name="imu" pos="0.5 0 0.10"/>
+
+      <geom name="downtube" type="capsule" fromto="0 0 0  1.0 0 0.05" size="0.025" mass="3"/>
+      <geom name="seattube" type="capsule" fromto="0.5 0 0.05  0.5 0 0.45" size="0.022" mass="1"/>
+      <geom name="rider"    type="sphere"  pos="0.5 0 0.50" size="0.09" mass="4" rgba="0.9 0.7 0.2 1"/>
+      <!-- 무게추 레일 (시각+질량, 비충돌) -->
+      <geom name="rail" class="noncolliding" type="capsule"
+            fromto="0.5 -0.17 0.25  0.5 0.17 0.25" size="0.012" mass="0.2"
+            rgba="0.3 0.3 0.35 1"/>
+
+      <!-- rear wheel (driven) -->
+      <body name="rear_wheel" pos="0 0 0">
+        <joint name="rear_spin" type="hinge" axis="0 1 0"/>
+        <geom class="wheel" name="rear_geom" mass="1.2"/>
+      </body>
+
+      <!-- moving mass: 안장 위 횡방향 슬라이더 (제어 입력 = 힘). 비충돌 -->
+      <body name="mass_slider" pos="0.5 0 0.25">
+        <joint name="slide_y" type="slide" axis="0 1 0" range="-0.15 0.15" damping="1.0"/>
+        <geom name="mmass" class="noncolliding" type="box"
+              size="0.05 0.04 0.03" mass="2.0" rgba="0.85 0.2 0.2 1"/>
+      </body>
+
+      <!-- steering fork + front wheel. 조향축 12° 후경(caster): trail ≈ 74mm.
+           FREE FORK: 액추에이터 없음 — self-steering 에만 맡김 (관측은 qpos로) -->
+      <body name="fork" pos="1.0 0 0.05">
+        <joint name="steer" type="hinge" axis="-0.2079 0 0.9781" range="-45 45"/>
+        <geom name="fork_geom" type="capsule" fromto="0 0 0  0 0 -0.05" size="0.022" mass="0.6"/>
+        <body name="front_wheel" pos="0 0 -0.05">
+          <joint name="front_spin" type="hinge" axis="0 1 0"/>
+          <geom class="wheel" name="front_geom" mass="1.2"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- downtube 끝단이 앞바퀴 내부를 관통하는데 frame↔front_wheel은 조부모-손자라
+       자동 접촉제외가 안 됨 (reaction_wheel 플랜트의 유령 브레이크 교훈) -->
+  <contact>
+    <exclude body1="frame" body2="front_wheel"/>
+  </contact>
+
+  <actuator>
+    <motor name="slide_force" joint="slide_y"   ctrlrange="-20 20"/>
+    <motor name="rear_drive"  joint="rear_spin" ctrlrange="-4 4"/>
+  </actuator>
+
+  <sensor>
+    <framezaxis  name="frame_up"  objtype="site" objname="imu"/>
+    <gyro        name="imu_gyro"  site="imu"/>
+    <accelerometer name="imu_acc" site="imu"/>
+    <jointpos    name="slide_pos" joint="slide_y"/>
+    <jointpos    name="steer_pos" joint="steer"/>
+    <jointvel    name="rear_w"    joint="rear_spin"/>
+  </sensor>
+</mujoco>
