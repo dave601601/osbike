@@ -87,9 +87,10 @@ cam.distance, cam.azimuth, cam.elevation = _dist, _az, _elev
 
 MODE = os.environ.get("MM_YAW", "straight")
 TURN_DEG = float(os.environ.get("MM_TURN_DEG", "40"))
+TURN_T = float(os.environ.get("MM_TURN_T", "2"))     # 선회 시작 시각 [s]
 def yaw_target(t):
     if MODE in ("turn", "turn30"):
-        return np.radians(TURN_DEG) if t >= 2 else 0.
+        return np.radians(TURN_DEG) if t >= TURN_T else 0.
     if MODE == "scurve":          # 참고: 무게추 조향 authority 초과(전복) 데모
         return np.radians(30.) if 2 <= t < 12 else (np.radians(-30.) if t >= 12 else 0.)
     return 0.
