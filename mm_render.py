@@ -24,17 +24,28 @@ FRAME_EVERY, FPS, W, H = 8, 30, 720, 480
 
 with open(M.XML) as f:
     xml = f.read()
-visual = f"""  <visual>
-    <global offwidth="{W}" offheight="{H}"/>
-  </visual>
-  <asset>
-    <texture name="grid" type="2d" builtin="checker" rgb1="0.20 0.24 0.29" rgb2="0.29 0.34 0.40"
-             width="512" height="512"/>
-    <material name="grid" texture="grid" texrepeat="12 12" reflectance="0.1"/>
-  </asset>
-"""
-xml = xml.replace("  <worldbody>", visual + "  <worldbody>", 1)
-xml = xml.replace('rgba="0.55 0.55 0.55 1"/>', 'material="grid"/>', 1)
+FLOOR = os.environ.get("MM_FLOOR", "checker")        # checker | posts(고정 컬러 기준점)
+xml = xml.replace("  <worldbody>",
+                  f'  <visual><global offwidth="{W}" offheight="{H}"/></visual>\n  <worldbody>', 1)
+if FLOOR == "posts":
+    import colorsys
+    xml = xml.replace('rgba="0.55 0.55 0.55 1"/>', 'rgba="0.30 0.31 0.34 1"/>', 1)  # 무광 바닥
+    xs = list(range(-8, 56, 4)); ys = list(range(-28, 29, 4))
+    xmin, span = xs[0], (xs[-1] - xs[0]) or 1
+    posts = []
+    for xi in xs:
+        r, g, b = colorsys.hsv_to_rgb(0.75 * (xi - xmin) / span, 0.75, 0.95)  # 전진따라 hue 램프
+        for yj in ys:
+            tall = 0.6 if (yj == 0) else 0.35            # y=0(중앙선) 열은 크게
+            posts.append(f'<geom type="cylinder" size="0.05 {tall}" pos="{xi} {yj} {tall}" '
+                         f'rgba="{r:.2f} {g:.2f} {b:.2f} 1" contype="0" conaffinity="0"/>')
+    xml = xml.replace("  </worldbody>", "    " + "\n    ".join(posts) + "\n  </worldbody>", 1)
+else:  # checker
+    asset = ('  <asset><texture name="grid" type="2d" builtin="checker" '
+             'rgb1="0.20 0.24 0.29" rgb2="0.29 0.34 0.40" width="512" height="512"/>'
+             '<material name="grid" texture="grid" texrepeat="12 12" reflectance="0.1"/></asset>\n')
+    xml = xml.replace("  <worldbody>", asset + "  <worldbody>", 1)
+    xml = xml.replace('rgba="0.55 0.55 0.55 1"/>', 'material="grid"/>', 1)
 FORCE = os.environ.get("MM_FORCE", "")               # 슬라이더 힘한계 override [N]
 if FORCE:
     xml = xml.replace('ctrlrange="-20 20"', f'ctrlrange="-{FORCE} {FORCE}"')
