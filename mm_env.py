@@ -7,6 +7,12 @@
 보상     = 생존 − lean² − 코스(ct) − 헤딩 − 속도 − Δa²(부드러움) − 에너지 − 스트로크접촉
            (생존-only는 "내리막 항복" cheat — docs/progress/mm.md 보강②)
 
+Residual 모드 (DR.res_scale > 0): 최종 명령 = clip(base + res_scale·π, ±1).
+base = ② 고전 baseline(LQR 60N + heading PI + k_lat, mm_controller — JAX라 그대로
+vmap)이 env 안에서 50Hz로 돎. base의 적분기(CtrlState)·직전 base 명령은 관측에
+포함(은닉 상태 제거). base 게인은 명목 모델 고정 — DR 파라미터를 모름(실차와 동일,
+robustness 비교의 요점). Δa·에너지 벌점은 최종 명령 기준.
+
 Domain randomization (에피소드 단위, DR() 기본값 = 전부 명목):
   지연 0~24ms(4ms 격자, 서브스텝 정확 적용) · 옆경사(중력 틸트) · μ(바퀴+바닥) ·
   슬라이더/라이더 질량 · 슬라이드 감쇠 · 액추에이터 게인 (모델 leaf 만 per-env vmap,
@@ -15,6 +21,7 @@ Domain randomization (에피소드 단위, DR() 기본값 = 전부 명목):
 
 주의: 학습(MJX/GPU) → 평가(CPU) sim2sim 갭 교훈 — 성능 주장은 CPU 하네스로만.
 """
+import json
 from functools import partial
 from typing import NamedTuple
 
@@ -30,7 +37,7 @@ CTRL_DT = DT * CTRL_EVERY
 EP_LEN = 1500                       # 30s
 ACT_DIM = 2
 ACT_HIST = 6                        # 지연 최대 24ms(6 물리스텝) 커버
-OBS_DIM = 13 + ACT_HIST * ACT_DIM
+OBS_DIM = 13 + ACT_HIST * ACT_DIM + 5   # +5 = base 적분기(3) + 직전 base 명령(2)
 F_MAX, TAU_MAX = 60.0, 4.0
 STROKE = 0.15
 WHEEL_R = 0.30
@@ -52,6 +59,7 @@ class DR(NamedTuple):
     v_lo: float = 1.5
     v_hi: float = 1.5
     pert_deg: float = 0.5           # 초기 lean 섭동 ±상한
+    res_scale: float = 0.0          # >0: residual 모드 (최종 = clip(base+res·π, ±1))
 
 
 class EnvState(NamedTuple):
@@ -64,6 +72,9 @@ class EnvState(NamedTuple):
     n_delay: jnp.ndarray            # 물리스텝 단위 지연
     act_buf: jnp.ndarray            # (ACT_HIST+1, 2) 발행 이력, [0]=최신
     push_n: jnp.ndarray
+    cs: jnp.ndarray                 # (3,) base 적분기 [v_i, yaw_i, lat_corr]
+    u_base: jnp.ndarray             # (2,) 직전 base 명령 (정규화, obs용)
+    burnin: jnp.ndarray             # 초기 위상 랜덤화 세대 (에피소드 통계 제외)
     rng: jnp.ndarray
     ep_ret: jnp.ndarray
     ep_len: jnp.ndarray
@@ -81,6 +92,19 @@ GID_MU = [mujoco.mj_name2id(_m, mujoco.mjtObj.mjOBJ_GEOM, g)
 DOF_SLIDE = int(_m.jnt_dofadr[mujoco.mj_name2id(_m, mujoco.mjtObj.mjOBJ_JOINT, "slide_y")])
 Q_SLIDE, Q_STEER, V_REAR, V_SLIDE, V_STEER, V_FRONT = 8, 9, 6, 7, 8, 9
 
+# residual 모드의 base = ② 고전 baseline. 게인은 명목(60N) 모델로 한 번 설계·고정
+# (DR 파라미터를 모르는 배포 컨트롤러 — mm_envelope 의 base 와 동일 구성).
+import mm_model as _MM                     # noqa: E402  (mm_controller 클립 한계 소스)
+import mm_controller as C                  # noqa: E402
+import mm_lqr as _LQR                      # noqa: E402
+_MM.CTRL_HI[_MM.A_SLIDE], _MM.CTRL_LO[_MM.A_SLIDE] = F_MAX, -F_MAX
+_K4, _, _ = _LQR.design(_m, y_max=STROKE, F_max=F_MAX)
+_gj = json.load(open("mm_lqr_gains.json"))
+GAINS = C.Gains(float(_K4[0]), float(_K4[1]), float(_K4[2]), float(_K4[3]),
+                _gj["kp_v"], _gj["ki_v"], _gj["k_yaw"], _gj["kd_yaw"],
+                _gj["lean_max"], _gj["ki_yaw"], _gj["k_lat"], _gj["kd_lat"],
+                _gj["yaw_corr_max"], _gj["lat_slew"])
+
 # DR 대상 모델 leaf 만 per-env(축 0), 나머지 공유(None) — 메모리 절약 + 병합 명확화
 MODEL_AXES = jax.tree.map(lambda _: None, MX)
 MODEL_AXES = MODEL_AXES.replace(
@@ -88,7 +112,8 @@ MODEL_AXES = MODEL_AXES.replace(
     body_mass=0, body_inertia=0, dof_damping=0, actuator_gainprm=0)
 
 STATE_AXES = EnvState(dx=0, t=0, v_target=0, yaw_goal=0, yref=0, pxy=0,
-                      n_delay=0, act_buf=0, push_n=0, rng=0, ep_ret=0, ep_len=0)
+                      n_delay=0, act_buf=0, push_n=0, cs=0, u_base=0,
+                      burnin=0, rng=0, ep_ret=0, ep_len=0)
 
 
 def _randomize_model(rng, dr: DR):
@@ -126,8 +151,12 @@ def _merge_model(done, new, old):
         actuator_gainprm=sel(new.actuator_gainprm, old.actuator_gainprm))
 
 
-def _reset_one(rng, dr: DR):
-    k = jax.random.split(rng, 6)
+def _reset_one(rng, dr: DR, stagger=False):
+    """stagger=True(최초 리셋 전용): 에피소드 위상 t 를 랜덤화 — 전 env 가 동시에
+    timeout 되는 '파도'가 per-iteration 에피소드 통계에 주기적 스파이크(1500/T iter)를
+    만들고, 파도 사이엔 성공이 집계에 안 잡히는 선택 편향을 만들기 때문 (실측: it46).
+    stagger 세대는 burnin 표시 → 통계 제외 (학습 자체엔 그대로 사용)."""
+    k = jax.random.split(rng, 7)
     dx = mjx.make_data(MX)
     pert = jnp.radians(dr.pert_deg) * jax.random.uniform(k[0], (), minval=-1., maxval=1.)
     v0 = jax.random.uniform(k[1], (), minval=dr.v_lo, maxval=dr.v_hi)
@@ -139,10 +168,13 @@ def _reset_one(rng, dr: DR):
     yaw_goal = jnp.radians(dr.turn_deg) * jax.random.uniform(k[2], (), minval=-1., maxval=1.)
     n_delay = jax.random.randint(k[3], (), 0, dr.delay_max + 1)
     push_n = dr.push_n * jax.random.uniform(k[4], (), minval=0., maxval=1.)
-    return EnvState(dx=dx, t=jnp.array(0), v_target=v0, yaw_goal=yaw_goal,
+    t0 = jax.random.randint(k[6], (), 0, EP_LEN) if stagger else jnp.array(0)
+    return EnvState(dx=dx, t=t0, v_target=v0, yaw_goal=yaw_goal,
                     yref=jnp.array(0.0), pxy=jnp.zeros(2), n_delay=n_delay,
                     act_buf=jnp.zeros((ACT_HIST + 1, ACT_DIM)), push_n=push_n,
-                    rng=k[5], ep_ret=jnp.array(0.0), ep_len=jnp.array(0))
+                    cs=jnp.zeros(3), u_base=jnp.zeros(2),
+                    burnin=jnp.array(stagger), rng=k[5],
+                    ep_ret=jnp.array(0.0), ep_len=jnp.array(0))
 
 
 def _obs(st: EnvState):
@@ -159,17 +191,32 @@ def _obs(st: EnvState):
                       v[V_STEER], v[5], v_fwd, jnp.sin(yerr), jnp.cos(yerr),
                       jnp.clip(ct / 5.0, -2.0, 2.0), jnp.clip(ctdot, -3.0, 3.0),
                       st.v_target])
-    return jnp.concatenate([core, st.act_buf[:ACT_HIST].ravel()])
+    return jnp.concatenate([core, st.act_buf[:ACT_HIST].ravel(), st.cs, st.u_base])
 
 
-def _step_one(st: EnvState, action, mxv):
-    """action ∈ [-1,1]^2 발행 → 지연 버퍼 → 5 물리스텝(서브스텝 정확 지연) → r/done."""
+def _step_one(st: EnvState, action, mxv, dr: DR):
+    """action ∈ [-1,1]^2 발행(residual 모드면 base 와 합성) → 지연 버퍼 →
+    5 물리스텝(서브스텝 정확 지연) → r/done."""
     action = jnp.clip(action, -1.0, 1.0)          # 가우시안 샘플이 범위 밖일 수 있음
     rng, k_push = jax.random.split(st.rng)
     tgt = jnp.where(st.t * CTRL_DT >= TURN_T, st.yaw_goal, 0.0)
     yref = st.yref + jnp.clip(tgt - st.yref, -SLEW * CTRL_DT, SLEW * CTRL_DT)
     pxy = st.pxy + st.v_target * CTRL_DT * jnp.array([jnp.cos(yref), jnp.sin(yref)])
-    act_buf = jnp.roll(st.act_buf, 1, axis=0).at[0].set(action)   # [j] = j틱 전 발행
+    if dr.res_scale > 0:                          # 정적 분기 (dr 은 jit static)
+        stc = C.read_state(st.dx)
+        yref_c, corr = C.lateral(stc, GAINS, st.pxy[0], st.pxy[1], yref,
+                                 corr_prev=st.cs[2], dt=CTRL_DT,
+                                 v_sched=st.v_target)
+        lean_ref, yaw_i = C.heading(stc, GAINS, yref_c, st.cs[1], CTRL_DT,
+                                    v_sched=st.v_target)
+        u_m = C.balance_mass(stc, GAINS, lean_ref)
+        u_dr, v_i = C.speed(stc, GAINS, st.cs[0], st.v_target, CTRL_DT)
+        u_base = jnp.array([u_m / F_MAX, u_dr / TAU_MAX])
+        cs = jnp.array([v_i, yaw_i, corr])
+        cmd = jnp.clip(u_base + dr.res_scale * action, -1.0, 1.0)
+    else:
+        u_base, cs, cmd = jnp.zeros(2), st.cs, action
+    act_buf = jnp.roll(st.act_buf, 1, axis=0).at[0].set(cmd)   # [j] = j틱 전 발행
     scale = jnp.array([F_MAX, TAU_MAX])
     push = jax.random.uniform(k_push, (2,), minval=-1., maxval=1.) * st.push_n
     xfrc = jnp.zeros_like(st.dx.xfrc_applied)
@@ -183,7 +230,8 @@ def _step_one(st: EnvState, action, mxv):
 
     dx = jax.lax.fori_loop(0, CTRL_EVERY, substep,
                            st.dx.replace(xfrc_applied=xfrc))
-    st2 = st._replace(dx=dx, t=st.t + 1, yref=yref, pxy=pxy, act_buf=act_buf, rng=rng)
+    st2 = st._replace(dx=dx, t=st.t + 1, yref=yref, pxy=pxy, act_buf=act_buf,
+                      cs=cs, u_base=u_base, rng=rng)
     q, v = dx.qpos, dx.qvel
     w, x, y, z = q[3], q[4], q[5], q[6]
     up_z = 1 - 2 * (x * x + y * y)
@@ -192,7 +240,7 @@ def _step_one(st: EnvState, action, mxv):
     v_fwd = v[0] * jnp.cos(yaw) + v[1] * jnp.sin(yaw)
     s, c = jnp.sin(yref), jnp.cos(yref)
     ct = -(q[0] - pxy[0]) * s + (q[1] - pxy[1]) * c
-    da = action - st.act_buf[0]                       # 직전 발행 대비
+    da = cmd - st.act_buf[0]                          # 최종 명령의 직전 대비 변화
     fell = up_z < 0.7
     # lean 벌점은 캡 필수: 캡 없으면 낙하 직전 스텝당 -30까지 커져 리턴이 행동과
     # 무관한 추락 구간에 지배되고(어드밴티지 노이즈화), 생존 보너스를 압도해
@@ -203,7 +251,7 @@ def _step_one(st: EnvState, action, mxv):
          - 0.2 * (1.0 - jnp.cos(yref - yaw))
          - 0.2 * (v_fwd - st.v_target) ** 2
          - 0.1 * jnp.sum(da ** 2)
-         - 0.01 * jnp.sum(action ** 2)
+         - 0.01 * jnp.sum(cmd ** 2)
          - 0.1 * (jnp.abs(q[Q_SLIDE]) > 0.9 * STROKE)
          - 10.0 * fell)
     timeout = st2.t >= EP_LEN
@@ -217,7 +265,7 @@ def reset(rng, n, dr: DR):
     k1, k2 = jax.random.split(rng)
     mxv = jax.vmap(lambda k: _randomize_model(k, dr),
                    out_axes=MODEL_AXES)(jax.random.split(k1, n))
-    st = jax.vmap(lambda k: _reset_one(k, dr))(jax.random.split(k2, n))
+    st = jax.vmap(lambda k: _reset_one(k, dr, stagger=True))(jax.random.split(k2, n))
     return st, mxv, jax.vmap(_obs)(st)
 
 
@@ -227,8 +275,9 @@ def step(st: EnvState, mxv, action, dr: DR):
     info: timeout(부트스트랩 구분) · terminal_obs(리셋 전 관측 — timeout 부트스트랩용)
           · fin_ret/fin_len(done 시점 에피소드 통계)."""
     st2, ob_term, r, done, timeout = jax.vmap(
-        _step_one, in_axes=(STATE_AXES, 0, MODEL_AXES))(st, action, mxv)
-    fin_ret, fin_len = st2.ep_ret, st2.ep_len
+        lambda s, a, m: _step_one(s, a, m, dr),
+        in_axes=(STATE_AXES, 0, MODEL_AXES))(st, action, mxv)
+    fin_ret, fin_len, fin_burnin = st2.ep_ret, st2.ep_len, st2.burnin
     keys = jax.vmap(lambda k: jax.random.split(k)[1])(st2.rng)
     st_new = jax.vmap(lambda k: _reset_one(k, dr))(keys)
     mxv_new = jax.vmap(lambda k: _randomize_model(k, dr), out_axes=MODEL_AXES)(keys)
@@ -240,4 +289,5 @@ def step(st: EnvState, mxv, action, dr: DR):
     mxv3 = _merge_model(done, mxv_new, mxv)
     ob = jax.vmap(_obs)(st3)
     return st3, mxv3, ob, r, done, dict(timeout=timeout, terminal_obs=ob_term,
-                                        fin_ret=fin_ret, fin_len=fin_len)
+                                        fin_ret=fin_ret, fin_len=fin_len,
+                                        fin_burnin=fin_burnin)

@@ -129,7 +129,8 @@ def rollout(params, nrm, st, mxv, rng, T, dr):
         st, mxv, _, r, done, info = E.step(st, mxv, a, dr)
         out = dict(obs=obs, act=a, logp=lp, val=val, rew=r, done=done,
                    timeout=info["timeout"], tobs=info["terminal_obs"],
-                   fin_ret=info["fin_ret"], fin_len=info["fin_len"])
+                   fin_ret=info["fin_ret"], fin_len=info["fin_len"],
+                   fin_burnin=info["fin_burnin"])
         return (st, mxv, rng), out
     (st, mxv, rng), tr = jax.lax.scan(one, (st, mxv, rng), None, length=T)
     last_obs = jax.vmap(E._obs)(st)
@@ -230,6 +231,7 @@ STAGES = dict(
             damp_hi=2.0, gain_pct=0.1, push_n=20.0, turn_deg=45.0,
             v_lo=1.0, v_hi=2.0, pert_deg=1.0),
 )
+STAGES["res"] = STAGES["dr"]._replace(res_scale=0.3)   # residual RL (base+잔차, 풀 DR)
 
 
 def train(args):
@@ -270,8 +272,9 @@ def train(args):
         t_now = time.time()
         iter_s, t_prev = t_now - t_prev, t_now
         sps = steps / (t_now - t0)
-        # 에피소드 통계 (이번 iteration 에서 끝난 에피소드들)
-        d = np.asarray(tr["done"])
+        # 에피소드 통계 (이번 iteration 에서 끝난 에피소드들, burn-in 세대 제외 —
+        # 초기 위상 랜덤화로 timeout 파도/선택편향 제거, mm_env._reset_one 주석)
+        d = np.asarray(tr["done"]) & ~np.asarray(tr["fin_burnin"])
         metrics = {
             "policy/entropy": ent, "policy/clip_fraction": frac,
             "policy/approx_kl": kl,

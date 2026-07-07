@@ -82,11 +82,16 @@ def run_one(task):
     """한 (severity, delay, seed[, gains 오버라이드]) 롤아웃 → 결과 dict. 결정론(CPU)."""
     sev_i, delay_ms, seed, *rest = task
     over = dict(rest[0]) if rest else {}
-    variant = over.pop("ctrl", "base")      # base | smith4 | smith6 (지연보상)
+    variant = over.pop("ctrl", "base")      # base | smith4 | smith6 | rl
+    pol_path = over.pop("policy", "")
     label, slope, mu, bump = SEVERITIES[sev_i]
     m, zt = build_model(slope, mu, bump, seed)
     pred = (D.Predictor.smith4(m) if variant == "smith4"
             else D.Predictor.smith6() if variant == "smith6" else None)
+    rlc = None
+    if variant == "rl":
+        import mm_policy as MP              # 늦은 import (고전 채점 경로 무부담)
+        rlc = MP.CpuController(pol_path)
     K, _, _ = mm_lqr.design(m, y_max=STROKE, F_max=FORCE)
     M.CTRL_HI[M.A_SLIDE], M.CTRL_LO[M.A_SLIDE] = FORCE, -FORCE
     base = json.load(open("mm_lqr_gains.json"))
@@ -125,13 +130,16 @@ def run_one(task):
         if step % CTRL_EVERY == 0:
             tgt = yaw_goal if t >= TURN_T else 0.0
             yref += float(np.clip(tgt - yref, -slew, slew))
-            path = (px, py, yref) if base.get("k_lat", 0.0) > 0 else None
-            xp = None
-            if pred is not None and n_delay > 0:
-                xp = pred.predict_seq(D.z6(C.read_state(d)),
-                                      D.horizon_seq(step, cur, pending, n_delay))
-            ctrl, cs, _ = C.controller(d, G, cs, V_TARGET, ctrl_dt,
-                                       yaw_ref=yref, path=path, x_pred4=xp)
+            if rlc is not None:
+                ctrl = np.asarray(rlc.tick(d, yref, px, py, V_TARGET), dtype=float)
+            else:
+                path = (px, py, yref) if base.get("k_lat", 0.0) > 0 else None
+                xp = None
+                if pred is not None and n_delay > 0:
+                    xp = pred.predict_seq(D.z6(C.read_state(d)),
+                                          D.horizon_seq(step, cur, pending, n_delay))
+                ctrl, cs, _ = C.controller(d, G, cs, V_TARGET, ctrl_dt,
+                                           yaw_ref=yref, path=path, x_pred4=xp)
             px += V_TARGET * ctrl_dt * np.cos(yref)
             py += V_TARGET * ctrl_dt * np.sin(yref)
             ct = float(-(d.qpos[0] - px) * np.sin(yref)
@@ -171,8 +179,10 @@ def main():
                     help="heading lean_max 오버라이드 [deg] (어블레이션)")
     ap.add_argument("--k-lat", type=float, default=None,
                     help="lateral 외곽루프 게인 오버라이드 (0=끔, 어블레이션)")
-    ap.add_argument("--ctrl", choices=("base", "smith4", "smith6"), default="base",
-                    help="지연보상 변형: smith4=해석 4-state, smith6=sysid 6-state 예측기")
+    ap.add_argument("--ctrl", choices=("base", "smith4", "smith6", "rl"),
+                    default="base",
+                    help="smith*=지연보상 예측기, rl=학습 정책(--policy 필요)")
+    ap.add_argument("--policy", default="", help="rl 채점용 체크포인트 경로")
     args = ap.parse_args()
 
     over = {}
@@ -182,6 +192,9 @@ def main():
         over["k_lat"] = args.k_lat
     if args.ctrl != "base":
         over["ctrl"] = args.ctrl
+    if args.ctrl == "rl":
+        assert args.policy, "--ctrl rl 은 --policy <ckpt.pkl> 필요"
+        over["policy"] = args.policy
     tasks = [(i, dms, s, over) for i in range(len(SEVERITIES))
              for dms in DELAYS_MS for s in range(args.seeds)]
     t0 = time.time()
@@ -205,7 +218,7 @@ def main():
     gj = json.load(open("mm_lqr_gains.json")); gj.update(over)
     cfg = dict(controller=f"LQR {FORCE:.0f}N + heading cascade + speed PI (50Hz ZOH)"
                           + (f" + {args.ctrl} 지연보상" if args.ctrl != "base" else ""),
-               delay_comp=args.ctrl,
+               delay_comp=args.ctrl, policy=args.policy,
                lean_max_deg=round(float(np.degrees(gj["lean_max"])), 2),
                k_lat=gj.get("k_lat", 0.0), kd_lat=gj.get("kd_lat", 0.0),
                yaw_corr_max_deg=round(float(np.degrees(gj.get("yaw_corr_max", 0.35))), 1),
