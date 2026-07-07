@@ -47,14 +47,17 @@ SLEW = float(jnp.radians(3.0))
 
 class DR(NamedTuple):
     """DR 강도 (기본값 = 명목). jit static 인자."""
-    delay_max: int = 0              # 지연 상한 [물리스텝, 0..6]
-    slope_deg: float = 0.0          # 옆경사 상한
+    delay_max: int = 0              # 지연 ∈ [delay_min, delay_max] [물리스텝, 0..6]
+    delay_min: int = 0
+    slope_deg: float = 0.0          # 옆경사 ∈ [slope_lo, slope_deg]
+    slope_lo: float = 0.0
     mu_lo: float = 1.4              # μ ∈ [lo, hi] (명목 1.4 = XML 바퀴값)
     mu_hi: float = 1.4
     mass_pct: float = 0.0           # 슬라이더/라이더 질량 ±비율
     damp_hi: float = 1.0            # 슬라이드 감쇠 ×[1/hi, hi]
     gain_pct: float = 0.0           # 액추에이터 게인 ±비율
-    push_n: float = 0.0             # 랜덤 푸시 상한 [N] (범프 프록시)
+    push_n: float = 0.0             # 랜덤 푸시 ∈ [push_lo, push_n] [N] (범프 프록시)
+    push_lo: float = 0.0
     turn_deg: float = 0.0           # 선회 목표 ±상한 (0 = 직진만)
     v_lo: float = 1.5
     v_hi: float = 1.5
@@ -119,7 +122,8 @@ STATE_AXES = EnvState(dx=0, t=0, v_target=0, yaw_goal=0, yref=0, pxy=0,
 def _randomize_model(rng, dr: DR):
     """에피소드용 모델 (DR leaf 샘플). vmap(out_axes=MODEL_AXES) 로 배치."""
     k = jax.random.split(rng, 6)
-    phi = jax.random.uniform(k[0], (), minval=0.0, maxval=jnp.radians(dr.slope_deg))
+    phi = jax.random.uniform(k[0], (), minval=jnp.radians(dr.slope_lo),
+                             maxval=jnp.radians(dr.slope_deg))
     sgn = jnp.sign(jax.random.uniform(k[1], (), minval=-1.0, maxval=1.0) + 1e-9)
     gravity = jnp.array([0.0, -9.81 * jnp.sin(phi) * sgn, -9.81 * jnp.cos(phi)])
     mu = jax.random.uniform(k[2], (), minval=dr.mu_lo, maxval=dr.mu_hi)
@@ -166,8 +170,9 @@ def _reset_one(rng, dr: DR, stagger=False):
             .at[V_FRONT].set(v0 / WHEEL_R))
     dx = dx.replace(qpos=qpos, qvel=qvel)
     yaw_goal = jnp.radians(dr.turn_deg) * jax.random.uniform(k[2], (), minval=-1., maxval=1.)
-    n_delay = jax.random.randint(k[3], (), 0, dr.delay_max + 1)
-    push_n = dr.push_n * jax.random.uniform(k[4], (), minval=0., maxval=1.)
+    n_delay = jax.random.randint(k[3], (), dr.delay_min, dr.delay_max + 1)
+    push_n = jax.random.uniform(k[4], (), minval=dr.push_lo, maxval=dr.push_n) \
+        if dr.push_n > 0 else jnp.array(0.0)
     t0 = jax.random.randint(k[6], (), 0, EP_LEN) if stagger else jnp.array(0)
     return EnvState(dx=dx, t=t0, v_target=v0, yaw_goal=yaw_goal,
                     yref=jnp.array(0.0), pxy=jnp.zeros(2), n_delay=n_delay,

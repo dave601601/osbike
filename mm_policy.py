@@ -19,7 +19,9 @@ import mujoco
 import mm_env as EV          # 상수/GAINS 재사용 (단일 소스) — CPU jax 로 로드됨
 
 
-RES_SCALE = {"res": 0.3}             # stage → residual 배율 (mm_ppo.STAGES 와 일치)
+# 구 ckpt(dr 미저장) 폴백 — 이름 추론은 위험: "res_hard2"가 사전에 없어 0.0(순수)으로
+# 해석돼 전 셀 0% 사고 발생. 신 ckpt 는 dr.res_scale 을 직접 저장.
+RES_SCALE_FALLBACK = {"res": 0.3, "res_hard": 0.3, "res_hard2": 0.3, "res_full": 1.0}
 
 
 class Policy:
@@ -30,7 +32,13 @@ class Policy:
         self.p, self.nrm = d["params"], d["nrm"]
         self.meta = {k: d.get(k) for k in ("it", "stage")}
         self.in_dim = self.p["pi"][0][0].shape[0]   # 구(25차원) ckpt 하위호환
-        self.res_scale = RES_SCALE.get(self.meta.get("stage"), 0.0)
+        if "dr" in d:
+            self.res_scale = float(d["dr"].get("res_scale", 0.0))
+        else:
+            stage = self.meta.get("stage")
+            assert stage in RES_SCALE_FALLBACK or not (stage or "").startswith("res"), \
+                f"res 계열 stage '{stage}' 의 res_scale 미상 — 폴백 사전에 추가 필요"
+            self.res_scale = RES_SCALE_FALLBACK.get(stage, 0.0)
 
     def __call__(self, obs):
         obs = np.asarray(obs)[: self.in_dim]

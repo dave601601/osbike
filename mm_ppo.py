@@ -232,6 +232,17 @@ STAGES = dict(
             v_lo=1.0, v_hi=2.0, pert_deg=1.0),
 )
 STAGES["res"] = STAGES["dr"]._replace(res_scale=0.3)   # residual RL (base+잔차, 풀 DR)
+# LQR-취약 도메인 집중 (fine-tune). v1(res_hard)은 모든 축 하한을 동시에 올려
+# 평균 추첨이 s0.75×16ms 급(최강 고전도 0% = 물리한계)이 됨 → 성공률 0, 리턴 천장.
+# v2: "이길 수 있는 hard" — 지연 하한만 유지(8ms+, base 가 지는 축), 나머지는
+# 명목~hard 독립 범위로 결합 질량을 winnable 대역(s0.25-0.6×지연)에 배치.
+STAGES["res_hard"] = STAGES["res"]._replace(delay_min=2, slope_lo=2.0,
+                                            mu_hi=0.9, push_lo=15.0, push_n=35.0)
+STAGES["res_hard2"] = STAGES["res"]._replace(delay_min=2, slope_lo=1.0,
+                                             mu_hi=1.2, push_lo=5.0, push_n=30.0)
+# residual 천장 어블레이션: res_scale=1.0 이면 clip(base+π)가 전 명령 공간을 커버
+# (base 는 prior 로 유지, ±30% 표현력 제약만 제거). ep_len 정체 2회의 원인 판정용.
+STAGES["res_full"] = STAGES["res_hard2"]._replace(res_scale=1.0)
 
 
 def train(args):
@@ -314,7 +325,7 @@ def train(args):
             with open(os.path.join(outdir, f"params_{it:05d}.pkl"), "wb") as f:
                 pickle.dump(dict(params=jax.device_get(params),
                                  nrm=jax.device_get(nrm), it=it,
-                                 stage=args.stage), f)
+                                 stage=args.stage, dr=dr._asdict()), f)
     if wb is not None:
         wb.finish()
     print(f"done: {outdir}  ep_ret={ret_ema:.1f} ep_len={len_ema:.1f}")
