@@ -1,0 +1,52 @@
+# RL (PPO + domain randomization)
+
+## 2026-07-07 — RL 파이프라인 구축 + flat cold start 통과 (sim2sim 검증까지)
+
+### 구성 (커밋 a79c1b2)
+- **`mm_env.py`**: MJX 배치 환경 — 엔벨로프 프로토콜의 일반화판 (v_target/선회 랜덤,
+  기준경로 = 명령 방위 적분). 관측 25 = 13 코어 + **행동 이력 6틱**(지연 24ms POMDP 처방),
+  행동 2 = [슬라이더 힘/60N, 뒷바퀴 토크/4Nm] (사용자 결정: 2D). 보상 = 생존 − lean(캡)
+  − ct − 헤딩 − 속도 − Δa² − 에너지 − 스트로크접촉. DR(에피소드): 지연 0-24ms(서브스텝
+  정확), 경사(중력틸트), μ, 질량, 감쇠, 게인 — 랜덤화 leaf 만 vmap(brax 식).
+- **MJX 제약**: hfield×cylinder 접촉 NotImplementedError → 학습 범프는 **랜덤 푸시
+  프록시**(xfrc), 실지형 채점은 CPU 하네스(mm_envelope)가 담당. 실린더-plane 접촉은 정상,
+  passive 낙하 거동 CPU와 정성 일치.
+- **`mm_ppo.py`**: 자체 미니 PPO (optax/flax/brax 미설치 + jax 0.10 핀 리스크 → 순수
+  JAX ~300줄). 직교 초기화 MLP(256,256), 전역 log_std(**하한 −2.5** = 엔트로피 붕괴
+  방지), GAE(timeout↔낙하 부트스트랩 구분, terminal_obs), 수제 Adam+grad clip, 관측
+  러닝 정규화. wandb 연동(entity/project 고정, episode/policy/training/timing 카탈로그,
+  미로그인 시 offline 폴백).
+- **`mm_policy.py`**: 체크포인트 → 순수 numpy 추론 + CPU 롤아웃 (배포/채점 브리지 —
+  이후 mm_envelope 의 RL 채점도 이걸 사용).
+
+### num_envs 탐색 (RTX 4060 Ti 8GB, 사용자 주도 지수→이분 탐색)
+학습 iteration(rollout+GAE+update) SPS 기준: **피크 = 16384 (48.5k steps/s 확정,
+런 중 최대 75k)**. 20480부터 절벽(14.8k), 24-28k 바닥(12.5k), ~32k OOM(jit_update 2GB).
+피크가 메모리 임계 직전 점에 정확히 위치 — 8GB VRAM 경계. 측정 노이즈 ±15-20% →
+단봉 최적화는 스캔+상위2 반복검증이 골든섹션보다 견고했음.
+
+### ★ 보상 설계 교훈: lean 벌점 캡 없으면 학습 정체 (실측)
+−50·lean² 무캡 → 낙하 직전 스텝당 −30: (a) 리턴이 행동과 무관한 추락 구간에 지배 →
+어드밴티지 노이즈화 → **19M 스텝 동안 KL~0.001 정체, ep_len = passive 수준**,
+(b) 생존(+1) 압도 → "빨리 죽는 게 이득" 자살 균형 위험. **−50·min(lean², 0.02)
+(±8° 밖 포화, 캡 −1)** 로 바꾸자 즉시 학습 (KL 0.007, 13M 스텝에 passive 2.5×).
+
+### Cold start 결과 (flat, DR off, v=1.5 고정, 16384 envs)
+78.6M 스텝 / ~18분: **ep_len 1499.9/1500 (30s 완주 ~100%), ep_ret 1490.9**.
+엔트로피는 floor(−2.5)에 안착 — 붕괴 방지 장치 정상 작동.
+
+### Sim2sim (MJX 학습 → CPU 배포 경로, mm_policy)
+- **v=1.5 (학습 분포): 30s 생존, lean RMS 0.08°, ct −0.5m — 완벽 전이.**
+- v=1.0: 생존하나 열화(ct −12m) / v=2.0: 5.8s 낙하 — flat 스테이지가 v=1.5 고정
+  학습이라 분포 밖(예상대로). task/DR 스테이지(v∈[1,2] 랜덤)가 처리할 항목.
+
+### 함정 (재발 방지)
+- **JAX+fork 교착의 MJX판은 없음** — 학습은 단일 프로세스 배치라 무관. CPU 채점 병렬은
+  여전히 spawn 필수 (mm.md 교훈).
+- MJX와 CPU 채점을 같은 GPU에서 동시 돌리면 측정 왜곡 — 스윕/학습은 배타 실행.
+
+### 다음
+1. **Residual RL** (승인된 순서): action = base-LQR(②, klat) + π 잔차(±30%) — full task
+   +DR 로 학습. mm_controller 가 JAX 라 env 내 vmap 가능.
+2. 체크포인트마다 CPU 엔벨로프 채점 훅 (mm_envelope --ctrl rl).
+3. 3-way 비교 (base / smith4 / RL) — 명목 + 파라미터 랜덤화 두 평가축.

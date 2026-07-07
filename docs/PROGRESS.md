@@ -34,15 +34,18 @@ free-fork 연구 플랜트에서:
 - [x] ~~보강③: delay-aware 개선/방어~~ → **완료(결론 반전)**: smith4가 명목 sim에서 갭을
       거의 닫음 — 단 모델오차 ±5%에 붕괴(무보상 이하), smith6(steer 포함 sysid)은 롤포워드
       발산. `mm_delay.py`, `envelope_lqr_smith{4,6}.json`. RL 명분 = 강건성으로 정밀화.
-- [ ] **RL 착수** (PPO/SAC + domain randomization, 지형·지연·파라미터 결합 랜덤화) —
-      비교군 3개: base(klat) / smith4(정확모델) / smith4(±10% 모델오차). 채점은
-      mm_envelope.py 하네스 + **파라미터 랜덤화 평가 축 추가** (강건성이 본 승부처).
+- [~] **RL 진행 중** ([상세](progress/rl.md)): MJX env+자체 PPO 구축, num_envs=16384 확정
+      (8GB 피크), **flat cold start 통과**(30s 완주 ~100%, sim2sim v=1.5 완벽 전이).
+      다음 = residual RL(base-LQR+잔차, full task+DR) → CPU 엔벨로프 채점 훅 →
+      3-way 비교(base/smith4/RL, 명목+파라미터 랜덤화 축). 보상 교훈: lean 벌점 캡 필수.
 - [ ] 실기 system ID(조향마찰·접촉·지연 실측)→sim 보정→실전이.
 - [ ] passive 자가안정 속도창(≥8 m/s 확인됨) 정밀화, Whipple 비교.
 
 ## Index (상세 — 최신 항목은 각 파일 상단)
 
 - [SUMMARY](SUMMARY.md) — **결론 종합** (플랜트·성과·정량결과·한계·RL포지셔닝·코드맵·다음).
+- [rl](progress/rl.md) — RL 파이프라인: MJX env·자체 PPO·num_envs 탐색·보상 캡 교훈·
+  cold start·sim2sim. 다음 = residual RL.
 - [mm](progress/mm.md) — 연구 타겟(moving-mass+free-fork) 시간순 상세: 설계·조향·힘임계·v_min·
   realism·slip·정지출발·stress-test(지연/지형/결합)·40-seed 엔벨로프 정정·외곽루프(코스유지)·
   **Smith predictor 반전(결합×지연 닫힘, 단 모델오차 ±5%에 붕괴)**.
