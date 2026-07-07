@@ -55,6 +55,37 @@ HF_X, HF_Y = 40.0, 60.0             # hfield 반폭 [m] — y 넓게(경사 드�
 HF_NR, HF_NC, HF_SIGMA = 1800, 60, 1.2   # mm_render 와 동일 해상도/스무딩 (y 15칸/m)
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _nominal_model():
+    """명목(무지형·무교란) 모델 — base 게인·smith 예측기 설계용."""
+    xml = open(M.XML).read().replace('ctrlrange="-20 20"',
+                                     f'ctrlrange="-{FORCE} {FORCE}"')
+    return mujoco.MjModel.from_xml_string(xml)
+
+
+def perturb_params(m, sev_i, delay_ms, seed, err):
+    """평가 플랜트에 모델오차 주입 (컨트롤러는 명목 설계 유지 = 실차 상황).
+    같은 (셀, seed)엔 컨트롤러와 무관하게 같은 추첨 → 짝지은 3-way 비교."""
+    if not err:
+        return
+    prng = np.random.RandomState((sev_i * 1000003 + delay_ms * 10007
+                                  + seed * 101 + 7) % 2**31)
+    u = lambda: prng.uniform(1.0 - err, 1.0 + err)
+    bid_s = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "mass_slider")
+    bid_r = int(m.geom_bodyid[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "rider")])
+    for bid in (bid_s, bid_r):
+        s = u()
+        m.body_mass[bid] *= s
+        m.body_inertia[bid] *= s
+    m.actuator_gainprm[0, 0] *= u()          # 슬라이더 힘 게인
+    m.actuator_gainprm[1, 0] *= u()          # 뒷바퀴 토크 게인
+    dof = int(m.jnt_dofadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "slide_y")])
+    m.dof_damping[dof] *= u()
+
+
 def build_model(slope_deg, mu, bump_cm, seed):
     """지형 variant 모델: hfield 범프 + 중력 틸트(옆경사) + 접촉 μ + 60N 슬라이더."""
     zt = max(bump_cm / 100.0, 1e-3)
@@ -84,16 +115,20 @@ def run_one(task):
     over = dict(rest[0]) if rest else {}
     variant = over.pop("ctrl", "base")      # base | smith4 | smith6 | rl
     pol_path = over.pop("policy", "")
+    param_err = float(over.pop("param_err", 0.0))
     label, slope, mu, bump = SEVERITIES[sev_i]
     m, zt = build_model(slope, mu, bump, seed)
-    pred = (D.Predictor.smith4(m) if variant == "smith4"
+    perturb_params(m, sev_i, delay_ms, seed, param_err)
+    # 게인·예측기는 항상 "명목" 모델로 설계 — 교란된 플랜트에서 설계하면 컨트롤러가
+    # 참값을 아는 치팅 (무교란 시 지형 모델과 파라미터 동일 → 기존 데이터와 비트동일)
+    pred = (D.Predictor.smith4(_nominal_model()) if variant == "smith4"
             else D.Predictor.smith6() if variant == "smith6" else None)
     rl_res = over.pop("res_scale_eval", None)
     rlc = None
     if variant == "rl":
         import mm_policy as MP              # 늦은 import (고전 채점 경로 무부담)
         rlc = MP.CpuController(pol_path, res_scale=rl_res)
-    K, _, _ = mm_lqr.design(m, y_max=STROKE, F_max=FORCE)
+    K, _, _ = mm_lqr.design(_nominal_model(), y_max=STROKE, F_max=FORCE)
     M.CTRL_HI[M.A_SLIDE], M.CTRL_LO[M.A_SLIDE] = FORCE, -FORCE
     base = json.load(open("mm_lqr_gains.json"))
     base.update(over)                       # 어블레이션용 (--k-lat 0 등)
@@ -186,6 +221,8 @@ def main():
     ap.add_argument("--policy", default="", help="rl 채점용 체크포인트 경로")
     ap.add_argument("--res-scale-eval", type=float, default=None,
                     help="평가 시 잔차 배율 오버라이드 (학습값과 다르게)")
+    ap.add_argument("--param-err", type=float, default=0.0,
+                    help="플랜트 모델오차 ±비율 (질량·게인·감쇠, 컨트롤러는 명목 유지)")
     args = ap.parse_args()
 
     over = {}
@@ -200,6 +237,8 @@ def main():
         over["policy"] = args.policy
         if args.res_scale_eval is not None:
             over["res_scale_eval"] = args.res_scale_eval
+    if args.param_err:
+        over["param_err"] = args.param_err
     tasks = [(i, dms, s, over) for i in range(len(SEVERITIES))
              for dms in DELAYS_MS for s in range(args.seeds)]
     t0 = time.time()
@@ -223,7 +262,7 @@ def main():
     gj = json.load(open("mm_lqr_gains.json")); gj.update(over)
     cfg = dict(controller=f"LQR {FORCE:.0f}N + heading cascade + speed PI (50Hz ZOH)"
                           + (f" + {args.ctrl} 지연보상" if args.ctrl != "base" else ""),
-               delay_comp=args.ctrl, policy=args.policy,
+               delay_comp=args.ctrl, policy=args.policy, param_err=args.param_err,
                lean_max_deg=round(float(np.degrees(gj["lean_max"])), 2),
                k_lat=gj.get("k_lat", 0.0), kd_lat=gj.get("kd_lat", 0.0),
                yaw_corr_max_deg=round(float(np.degrees(gj.get("yaw_corr_max", 0.35))), 1),
