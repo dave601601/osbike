@@ -26,7 +26,9 @@ with open(M.XML) as f:
     xml = f.read()
 FLOOR = os.environ.get("MM_FLOOR", "checker")        # checker | posts(고정 컬러 기준점)
 xml = xml.replace("  <worldbody>",
-                  f'  <visual><global offwidth="{W}" offheight="{H}"/></visual>\n  <worldbody>', 1)
+                  f'  <visual><global offwidth="{W}" offheight="{H}"/>'
+                  f'<headlight ambient="0.5 0.5 0.5" diffuse="0.5 0.5 0.5" specular="0.1 0.1 0.1"/>'
+                  f'</visual>\n  <worldbody>', 1)
 if FLOOR == "posts":
     import colorsys
     xml = xml.replace('rgba="0.55 0.55 0.55 1"/>', 'rgba="0.30 0.31 0.34 1"/>', 1)  # 무광 바닥
@@ -44,9 +46,11 @@ else:  # checker (+ 선택적 hfield 범프)
     BUMP = os.environ.get("MM_BUMP", "")             # 범프 최대높이 [cm]
     hf = (f'<hfield name="bumps" nrow="240" ncol="60" size="40 8 {max(float(BUMP)/100,1e-3)} 0.1"/>'
           if BUMP else '')
-    asset = ('  <asset>' + hf + '<texture name="grid" type="2d" builtin="checker" '
-             'rgb1="0.20 0.24 0.29" rgb2="0.29 0.34 0.40" width="512" height="512"/>'
-             '<material name="grid" texture="grid" texrepeat="12 12" reflectance="0.1"/></asset>\n')
+    c1, c2 = ("0.35 0.55 0.75", "0.85 0.88 0.92") if BUMP else ("0.20 0.24 0.29", "0.29 0.34 0.40")
+    rep = "40 8" if BUMP else "12 12"                # 범프면 hfield 셀에 맞춰 촘촘한 격자
+    asset = ('  <asset>' + hf + f'<texture name="grid" type="2d" builtin="checker" '
+             f'rgb1="{c1}" rgb2="{c2}" width="512" height="512"/>'
+             f'<material name="grid" texture="grid" texrepeat="{rep}" reflectance="0.2"/></asset>\n')
     xml = xml.replace("  <worldbody>", asset + "  <worldbody>", 1)
     if BUMP:
         xml = xml.replace('<geom name="ground" type="plane" size="0 0 0.05" rgba="0.55 0.55 0.55 1"/>',
@@ -59,9 +63,10 @@ if FORCE:
 rm = mujoco.MjModel.from_xml_string(xml)
 if os.environ.get("MM_BUMP", ""):                    # hfield 높이 데이터 (smooth 랜덤 범프)
     from scipy.ndimage import gaussian_filter
+    sig = float(os.environ.get("MM_BUMP_SIGMA", "1.2"))   # 작을수록 날카로운 범프
     hid = mujoco.mj_name2id(rm, mujoco.mjtObj.mjOBJ_HFIELD, "bumps")
     nr, nc = int(rm.hfield_nrow[hid]), int(rm.hfield_ncol[hid])
-    h = gaussian_filter(np.random.RandomState(0).rand(nr, nc), sigma=2)
+    h = gaussian_filter(np.random.RandomState(0).rand(nr, nc), sigma=sig)
     rm.hfield_data[:] = ((h - h.min()) / (h.max() - h.min())).ravel()
 
 base = json.load(open("mm_lqr_gains.json"))
