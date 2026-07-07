@@ -15,10 +15,21 @@
 - **판정**: 실차 총지연(IMU필터 10~30ms + 50Hz 20ms + 액추에이터)이 40ms 임계에 근접 →
   **genuine sim-to-real 리스크**.
 
-### RL niche 인가? — 아직 미결 (고전 대안 먼저 확인 필요)
-지연 강건성을 올리는 고전 대안: (a) gain detune(R↑, 60N 여유 활용), (b) Smith predictor/
-지연인지 LQR, (c) 저역통과. **RL(DR로 지연 랜덤화 학습)이 이걸 이기는지는 고전 detune과
-비교해야 공정.** 다음: gain 레벨 vs 지연tolerance 스윕 → detune으로 40ms를 얼마나 밀 수 있나.
+### RL niche 인가? — detune 검증 결과: 고전 gain-tuning은 40ms에서 캡 (delay-aware 필요)
+게인 레벨(설계 Fmax)별 최대 무낙하 지연 (60N, 50Hz, v=2):
+| 설계Fmax | K0 | 0ms | 최대지연 |
+|---|---|---|---|
+| 3~5 | -5.5k~-7.3k | **1.76° 셔더**(너무약) | 20ms |
+| 10 | -11.5k | 깨끗 | 20ms |
+| **20** | **-19.4k** | 깨끗 | **40ms ★스윗스팟** |
+| 40~60 | -34k~-48k | 깨끗 | 20ms |
+
+- **detune 비단조**: Fd=20이 최선(40ms). 너무 약하면 빠른 극 못 잡아 셔더+악화, 너무 세면
+  지연 민감. **단순 gain-tuning으로 20→40ms가 한계, 그 이상 안 밀림.**
+- (참고: 렌더에 쓴 Fd=60은 delay 관점 열등. 권장 운전점 = Fd≈20, K0≈-19k.)
+- **결론**: 지연은 gain-tuning만으론 부족 → **delay-aware 고전(Smith predictor/상태예측 LQR)
+  또는 RL(DR)** 필요. 40ms 실차 지연에 basic LQR은 marginal. 공정 비교 = **RL vs
+  (LQR+Smith predictor)**. 둘 다 지연을 명시 처리 → 다음: 상태예측 LQR로 40ms↑ 가능한지.
 
 ## 2026-07-07 — 정지출발(standing start): v=0에서 가속→유지 성공 (초기 기울기 ≤1°)
 
