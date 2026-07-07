@@ -68,8 +68,9 @@ if LEANMAX:
 d = mujoco.MjData(rm)
 a = np.radians(PERT) / 2
 d.qpos[3:7] = [np.cos(a), np.sin(a), 0.0, 0.0]
-d.qvel[0] = V_TARGET                                # 발사 시작
-d.qvel[M.V_REAR] = d.qvel[M.V_FRONT] = V_TARGET / M.WHEEL_R
+V0 = float(os.environ.get("MM_V0", V_TARGET))       # 초기속도 (MM_V0=0 → 정지출발)
+d.qvel[0] = V0
+d.qvel[M.V_REAR] = d.qvel[M.V_FRONT] = V0 / M.WHEEL_R
 mujoco.mj_forward(rm, d)
 integ = 0.0
 
