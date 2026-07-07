@@ -67,8 +67,10 @@ def balance_mass(st: St, g: Gains, lean_ref=0.0):
 
 
 def heading(st: St, g: Gains, yaw_ref):
-    """yaw 오차 → lean_ref. 좌회전(yaw+)엔 왼쪽 기울기(lean−) 필요 → 부호 음수.
-    lean_max 로 제한: 무게추 정적 권한(≈2.5°) 안에서만 기울인다."""
+    """yaw 오차 → lean_ref. 좌회전(yaw+)엔 왼쪽 기울기(lean−) → 부호 음수.
+    한계(검증됨): heading 홀드는 **≈5°까지만** 정착. 10°↑ 는 오버슛 후 낙하 —
+    선회 정지에 필요한 lean 반전이 무게추 authority 초과 (docs/progress/mm.md).
+    주의: kd_yaw>0 은 역효과(st.yaw_rate가 lean 중 roll과 섞여 균형 파괴) → 기본 0."""
     err = jnp.arctan2(jnp.sin(yaw_ref - st.yaw), jnp.cos(yaw_ref - st.yaw))
     lean_ref = -(g.k_yaw * err - g.kd_yaw * st.yaw_rate)
     return jnp.clip(lean_ref, -g.lean_max, g.lean_max)
