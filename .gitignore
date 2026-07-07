@@ -14,3 +14,8 @@ wheels/
 *.docx
 *.pdf
 *.png
+
+# RL artifacts (로그·체크포인트·wandb 로컬 런)
+ckpt/
+wandb/
+.env*
