@@ -40,16 +40,29 @@ if FLOOR == "posts":
             posts.append(f'<geom type="cylinder" size="0.05 {tall}" pos="{xi} {yj} {tall}" '
                          f'rgba="{r:.2f} {g:.2f} {b:.2f} 1" contype="0" conaffinity="0"/>')
     xml = xml.replace("  </worldbody>", "    " + "\n    ".join(posts) + "\n  </worldbody>", 1)
-else:  # checker
-    asset = ('  <asset><texture name="grid" type="2d" builtin="checker" '
+else:  # checker (+ 선택적 hfield 범프)
+    BUMP = os.environ.get("MM_BUMP", "")             # 범프 최대높이 [cm]
+    hf = (f'<hfield name="bumps" nrow="240" ncol="60" size="40 8 {max(float(BUMP)/100,1e-3)} 0.1"/>'
+          if BUMP else '')
+    asset = ('  <asset>' + hf + '<texture name="grid" type="2d" builtin="checker" '
              'rgb1="0.20 0.24 0.29" rgb2="0.29 0.34 0.40" width="512" height="512"/>'
              '<material name="grid" texture="grid" texrepeat="12 12" reflectance="0.1"/></asset>\n')
     xml = xml.replace("  <worldbody>", asset + "  <worldbody>", 1)
-    xml = xml.replace('rgba="0.55 0.55 0.55 1"/>', 'material="grid"/>', 1)
+    if BUMP:
+        xml = xml.replace('<geom name="ground" type="plane" size="0 0 0.05" rgba="0.55 0.55 0.55 1"/>',
+                          '<geom name="ground" type="hfield" hfield="bumps" pos="38 0 0" material="grid"/>')
+    else:
+        xml = xml.replace('rgba="0.55 0.55 0.55 1"/>', 'material="grid"/>', 1)
 FORCE = os.environ.get("MM_FORCE", "")               # 슬라이더 힘한계 override [N]
 if FORCE:
     xml = xml.replace('ctrlrange="-20 20"', f'ctrlrange="-{FORCE} {FORCE}"')
 rm = mujoco.MjModel.from_xml_string(xml)
+if os.environ.get("MM_BUMP", ""):                    # hfield 높이 데이터 (smooth 랜덤 범프)
+    from scipy.ndimage import gaussian_filter
+    hid = mujoco.mj_name2id(rm, mujoco.mjtObj.mjOBJ_HFIELD, "bumps")
+    nr, nc = int(rm.hfield_nrow[hid]), int(rm.hfield_ncol[hid])
+    h = gaussian_filter(np.random.RandomState(0).rand(nr, nc), sigma=2)
+    rm.hfield_data[:] = ((h - h.min()) / (h.max() - h.min())).ravel()
 
 base = json.load(open("mm_lqr_gains.json"))
 if FORCE:  # 힘에 맞게 balance LQR 재설계 + 컨트롤러 클립도 그 힘으로
@@ -68,6 +81,8 @@ if LEANMAX:
 d = mujoco.MjData(rm)
 a = np.radians(PERT) / 2
 d.qpos[3:7] = [np.cos(a), np.sin(a), 0.0, 0.0]
+if os.environ.get("MM_BUMP", ""):
+    d.qpos[2] = 0.30 + float(os.environ["MM_BUMP"]) / 100   # 범프 위 시작
 V0 = float(os.environ.get("MM_V0", V_TARGET))       # 초기속도 (MM_V0=0 → 정지출발)
 d.qvel[0] = V0
 d.qvel[M.V_REAR] = d.qvel[M.V_FRONT] = V0 / M.WHEEL_R
