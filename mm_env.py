@@ -68,6 +68,9 @@ class DR(NamedTuple):
     v_hi: float = 1.5
     pert_deg: float = 0.5           # 초기 lean 섭동 ±상한
     res_scale: float = 0.0          # >0: residual 모드 (최종 = clip(base+res·π, ±1))
+    res_pen: float = 0.0            # 잔차 크기 벌점 −res_pen·|π|² — scale 1.0 무앵커
+                                    # 정책이 과작동 진동 모드(평지 lean 3-5°)에 빠진
+                                    # 사고 재발 방지 (잔차 절반 평가로 회복 실증)
 
 
 class EnvState(NamedTuple):
@@ -271,6 +274,7 @@ def _step_one(st: EnvState, action, mxv, dr: DR):
          - 0.2 * (v_fwd - st.v_target) ** 2
          - 0.1 * jnp.sum(da ** 2)
          - 0.01 * jnp.sum(cmd ** 2)
+         - dr.res_pen * jnp.sum(action ** 2)
          - 0.1 * (jnp.abs(q[Q_SLIDE]) > 0.9 * STROKE)
          - 10.0 * fell)
     timeout = st2.t >= EP_LEN

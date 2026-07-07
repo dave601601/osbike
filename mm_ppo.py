@@ -246,6 +246,10 @@ STAGES["res_full"] = STAGES["res_hard2"]._replace(res_scale=1.0)
 # 최종 조합 (교훈 3개 반영): 프레임 스태킹(POMDP 처방) + 지연 0-24ms 전 구간 혼합
 # (지연 하한 금지 — res_hard2 저지연 붕괴 교훈) + res_scale 1.0 (천장 제거).
 STAGES["res_v2"] = STAGES["res"]._replace(res_scale=1.0)
+# v2 사후: 무앵커 scale 1.0 이 과작동 진동 국소최적에 빠짐(평지 lean 3-5°, 쉬운 셀
+# 붕괴; 잔차 절반 평가로 즉시 회복 = 방향은 옳고 크기가 과함) → v3 = scale 0.5 +
+# 잔차 크기 벌점(res_pen) 앵커.
+STAGES["res_v3"] = STAGES["res"]._replace(res_scale=0.5, res_pen=0.05)
 
 
 def train(args):

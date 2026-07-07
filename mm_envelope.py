@@ -88,10 +88,11 @@ def run_one(task):
     m, zt = build_model(slope, mu, bump, seed)
     pred = (D.Predictor.smith4(m) if variant == "smith4"
             else D.Predictor.smith6() if variant == "smith6" else None)
+    rl_res = over.pop("res_scale_eval", None)
     rlc = None
     if variant == "rl":
         import mm_policy as MP              # 늦은 import (고전 채점 경로 무부담)
-        rlc = MP.CpuController(pol_path)
+        rlc = MP.CpuController(pol_path, res_scale=rl_res)
     K, _, _ = mm_lqr.design(m, y_max=STROKE, F_max=FORCE)
     M.CTRL_HI[M.A_SLIDE], M.CTRL_LO[M.A_SLIDE] = FORCE, -FORCE
     base = json.load(open("mm_lqr_gains.json"))
@@ -183,6 +184,8 @@ def main():
                     default="base",
                     help="smith*=지연보상 예측기, rl=학습 정책(--policy 필요)")
     ap.add_argument("--policy", default="", help="rl 채점용 체크포인트 경로")
+    ap.add_argument("--res-scale-eval", type=float, default=None,
+                    help="평가 시 잔차 배율 오버라이드 (학습값과 다르게)")
     args = ap.parse_args()
 
     over = {}
@@ -195,6 +198,8 @@ def main():
     if args.ctrl == "rl":
         assert args.policy, "--ctrl rl 은 --policy <ckpt.pkl> 필요"
         over["policy"] = args.policy
+        if args.res_scale_eval is not None:
+            over["res_scale_eval"] = args.res_scale_eval
     tasks = [(i, dms, s, over) for i in range(len(SEVERITIES))
              for dms in DELAYS_MS for s in range(args.seeds)]
     t0 = time.time()
