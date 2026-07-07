@@ -1,5 +1,29 @@
 # moving-mass + free-fork (연구 타겟 플랜트)
 
+## 2026-07-07 — LQR stress-test ②: 지형/경사/마찰은 robust (한계는 물리 authority)
+
+### 결과 (60N LQR, v=1.5)
+| 외란 | 한계 | 원인(=RL이 못 뚫는 물리) |
+|---|---|---|
+| 옆경사(cross-slope) | ~5° (7°서 낙하) | 무게추가 옆중력 상쇄 → 17cm서 스트로크 소진 |
+| 오르막(long slope) | ~4° | ±4Nm 드라이브가 속도 유지 못해 v_min↓ 낙하(균형 아님) |
+| 마찰 μ | **0.1(빙판)까지 OK** | 직진은 옆힘 거의 안 씀 |
+| 범프 지형(hfield) | **≥5cm smooth OK** | (더 높은/날카로운 건 미검증) |
+
+### 지형 만드는 법 (참고)
+- 경사: `m.opt.gravity` 틸트 (평지+기운 중력 = 경사 등가). 옆경사=y성분, 오르막=x성분.
+- 범프: **hfield** — `<asset><hfield nrow ncol size="sx sy zt zb"/></asset>` + `type="hfield"`
+  geom, `m.hfield_data[:]` 에 높이(0~1, zt로 스케일). 여기선 gaussian smooth 랜덤.
+- 마찰: `m.geom_friction[gid,0]`.
+
+### 종합: RL niche는 어디인가 (stress-test 결론)
+- ✅ **고전 LQR로 다 됨**: 균형·저속(≥v_min)·선회·정지출발·마찰(빙판)·옆경사5°·범프5cm.
+  한계는 전부 **물리 authority**(스트로크·드라이브·self-steering) → **RL도 못 뚫음**.
+- ⚠️ **유일한 진짜 gap = 액추에이터 지연/sim-to-real** (stress-test ①). gain-tune으로 40ms
+  캡 → delay-aware(Smith predictor) 또는 RL(DR) 필요. **이게 RL의 순수 premium 후보.**
+- → 제안서 결론 방향: "nominal·외란엔 고전 충분, RL의 값은 sim-to-real(특히 지연) 강건성에
+  국한" = 강한 baseline 위에서의 정직한 비교. (대부분 RL논문은 약baseline과 비교 → 차별점.)
+
 ## 2026-07-07 — LQR stress-test ①: 액추에이터 지연 tolerance ~40ms (셔더링, sim2real 리스크)
 
 ### 결과 (60N LQR, 지연버퍼 = 명령 N스텝 늦게 적용)
