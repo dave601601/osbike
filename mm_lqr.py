@@ -94,11 +94,16 @@ if __name__ == "__main__":
     print("\n=== 4-state LQR ===")
     print(f"  K = {K}   (u = -(K·x) 관례, mm_controller.balance_mass)")
     print(f"  closed-loop |eig| = {np.abs(eig)}  안정: {np.all(np.abs(eig) < 1)}")
-    # heading(무게추 조향): 검증 운전점 v=2.0, 스텝+30° 20s 추종(최종 26.9°).
-    # yaw_ref는 호출부에서 슬루 제한(≈10°/s) 권장. lean_max=0.5°(0.0087rad) —
-    # 무게추 조향은 본질적으로 완만 (지속 lean 유지에 스트로크 소모).
+    # heading(무게추 조향): yaw_ref는 호출부에서 슬루 제한(3~7°/s) 권장.
+    # lean_max=3°(0.0524) — 0.5°는 경사에서 heading 권한 부족(self-steering이 yaw를
+    # 내리막으로 -60°+ 끌고 감, slip ~1°뿐 = 순수 heading 폭주). 경사각만큼의 lean은
+    # 유효중력에 수직이라 슬라이더 부담 ≈0 → lean_max ≥ 경사각+선회여유.
+    # ki_yaw: P-only는 경사에서 상주오차(3° lean에 15° 오차) → 적분이 bias 공급.
+    # lateral 외곽루프(k_lat): crosstrack e → yaw_ref 보정. τ≈1/(v·k_lat)≈8s@v1.5.
+    # 보정은 ±12°(yaw_corr_max) + 1.5°/s slew(lat_slew) — 즉발 보정은 선회 램프서 낙하.
     full = dict(k_lean=float(K[0]), k_rrate=float(K[1]), k_y=float(K[2]),
                 k_ydot=float(K[3]), kp_v=2.0, ki_v=0.5,
-                k_yaw=0.2, kd_yaw=0.0, lean_max=0.0087)
+                k_yaw=0.2, kd_yaw=0.0, lean_max=0.0524, ki_yaw=0.05,
+                k_lat=0.08, kd_lat=0.3, yaw_corr_max=0.21, lat_slew=0.026)
     json.dump(full, open("mm_lqr_gains.json", "w"), indent=2)
     print("-> mm_lqr_gains.json 저장 (balance LQR + heading + speed PI)")

@@ -15,8 +15,31 @@ class Gains(NamedTuple):
     k_lean: float; k_rrate: float; k_y: float; k_ydot: float
     # speed (rear drive) PI
     kp_v: float;   ki_v: float
-    # heading (yaw_ref → lean_ref, 무게추 유도 카운터스티어). 기본 0 = 직진 전용
+    # heading (yaw_ref → lean_ref, 무게추 유도 카운터스티어). 기본 0 = 직진 전용.
+    # 경사에서 self-steering이 heading을 내리막으로 끌고 감(2°경사서 yaw -66° 폭주,
+    # slip ~1°뿐 = 순수 heading 상실). 처방 = lean_max ≥ 경사각+여유 (경사각만큼의
+    # lean은 유효중력에 수직이라 슬라이더 부담 ≈0) + ki_yaw 적분(P-only는 상주오차).
     k_yaw: float = 0.0; kd_yaw: float = 0.0; lean_max: float = 0.035
+    ki_yaw: float = 0.0
+    # lateral 외곽루프 (crosstrack → yaw_ref 보정). 기본 0 = 미사용.
+    # 보정은 slew 제한 필수 — 선회 램프 중 회전하는 기준선에 대한 e/ė가 요동쳐
+    # 즉발 보정을 넣으면 낙하 (lean1°+k_lat부터 전 seed 낙하 관측).
+    k_lat: float = 0.0; kd_lat: float = 0.0
+    yaw_corr_max: float = 0.21; lat_slew: float = 0.026   # ±12°, 1.5°/s
+    # 외곽루프 속도 스케줄 frac=clip((v_target−v_lean0)/(v_lean−v_lean0),0,1):
+    # lean 캡 = max(frac·lean_max, 0.5°), ki_yaw·k_lat 도 frac 배 → v≤v_lean0 에선
+    # 구 P-only(0.5°) 컨트롤러로 정확히 환원. 이유: 저속은 lean당 yaw 권한(g·tanθ/v)이
+    # 커져 같은 게인이 고게인화 + marginal 균형이라, 캡만 줄여도(0.5°) 적분/k_lat
+    # 동역학 주입만으로 v=0.65 낙하 (isolation 검증). v_target 기준(실측 v_fwd 아님)
+    # 이유: 범프/경사로 v가 처질 때 캡이 같이 처지면 드리프트 악순환 (ct -7→-16m 관측).
+    v_lean: float = 1.5; v_lean0: float = 0.75
+
+
+class CtrlState(NamedTuple):
+    """controller() 가 스텝마다 들고 다니는 적분/슬루 상태. 초기값 CtrlState() 또는 0.0."""
+    v_i: float = 0.0        # 속도 PI 적분
+    yaw_i: float = 0.0      # heading 적분 (경사 정상상태 lean bias)
+    lat_corr: float = 0.0   # lateral 보정 현재값 (slew 메모리)
 
 
 class St(NamedTuple):
@@ -31,6 +54,9 @@ class St(NamedTuple):
     yaw: float
     yaw_rate: float
     y_lat: float
+    x: float           # world 위치/속도 (lateral 외곽루프의 crosstrack 용)
+    vx_w: float
+    vy_w: float
 
 
 def _quat_to_yaw(q):
@@ -55,6 +81,9 @@ def read_state(dx) -> St:
         yaw        = yaw,
         yaw_rate   = v[5],
         y_lat      = q[1],
+        x          = q[0],
+        vx_w       = v[0],
+        vy_w       = v[1],
     )
 
 
@@ -66,14 +95,38 @@ def balance_mass(st: St, g: Gains, lean_ref=0.0):
     return jnp.clip(F, M.CTRL_LO[M.A_SLIDE], M.CTRL_HI[M.A_SLIDE])
 
 
-def heading(st: St, g: Gains, yaw_ref):
-    """yaw 오차 → lean_ref. 좌회전(yaw+)엔 왼쪽 기울기(lean−) → 부호 음수.
-    한계(검증됨): heading 홀드는 **≈5°까지만** 정착. 10°↑ 는 오버슛 후 낙하 —
-    선회 정지에 필요한 lean 반전이 무게추 authority 초과 (docs/progress/mm.md).
+def heading(st: St, g: Gains, yaw_ref, yaw_i=0.0, dt=0.0, v_sched=None):
+    """yaw 오차 → lean_ref (PI). 좌회전(yaw+)엔 왼쪽 기울기(lean−) → 부호 음수.
+    적분은 경사의 정상 외란(지속 lean bias 필요)용 — 포화 중엔 적분 정지(anti-windup).
+    lean 캡은 v_sched(=v_target) 스케줄 — Gains.v_lean 주석 참조.
     주의: kd_yaw>0 은 역효과(st.yaw_rate가 lean 중 roll과 섞여 균형 파괴) → 기본 0."""
     err = jnp.arctan2(jnp.sin(yaw_ref - st.yaw), jnp.cos(yaw_ref - st.yaw))
-    lean_ref = -(g.k_yaw * err - g.kd_yaw * st.yaw_rate)
-    return jnp.clip(lean_ref, -g.lean_max, g.lean_max)
+    frac = 1.0 if v_sched is None else sched_frac(g, v_sched)
+    raw = -(g.k_yaw * err + frac * g.ki_yaw * yaw_i - g.kd_yaw * st.yaw_rate)
+    cap = jnp.maximum(g.lean_max * frac, 0.0087)
+    lean_ref = jnp.clip(raw, -cap, cap)
+    yaw_i = jnp.where((jnp.abs(raw) < cap) & (frac > 0), yaw_i + err * dt, yaw_i)
+    return lean_ref, yaw_i
+
+
+def sched_frac(g: Gains, v_sched):
+    """외곽루프 속도 스케줄 계수 (Gains.v_lean 주석 참조)."""
+    return jnp.clip((v_sched - g.v_lean0) / (g.v_lean - g.v_lean0), 0.0, 1.0)
+
+
+def lateral(st: St, g: Gains, px, py, chi, corr_prev=0.0, dt=0.0, v_sched=None):
+    """crosstrack 외곽루프: 기준선(점 (px,py), 방위 chi)에서의 횡이탈 e 를 yaw_ref 보정으로.
+    e>0 = 경로 왼쪽 → 오른쪽으로 조향(yaw_ref < chi). 보정은 ±yaw_corr_max 클립 +
+    lat_slew 슬루 제한 (즉발 보정은 선회 램프에서 낙하 유발 — Gains 주석) +
+    저속 frac 감쇠 (v≤v_lean0 에선 0으로 슬루아웃)."""
+    s, c = jnp.sin(chi), jnp.cos(chi)
+    e  = -(st.x - px) * s + (st.y_lat - py) * c
+    ed = -st.vx_w * s + st.vy_w * c
+    frac = 1.0 if v_sched is None else sched_frac(g, v_sched)
+    des = jnp.clip(-frac * (g.k_lat * e + g.kd_lat * ed),
+                   -g.yaw_corr_max, g.yaw_corr_max)
+    corr = corr_prev + jnp.clip(des - corr_prev, -g.lat_slew * dt, g.lat_slew * dt)
+    return chi + corr, corr
 
 
 def speed(st: St, g: Gains, integ, v_target, dt):
@@ -83,10 +136,18 @@ def speed(st: St, g: Gains, integ, v_target, dt):
     return jnp.clip(tau, M.CTRL_LO[M.A_REAR], M.CTRL_HI[M.A_REAR]), integ
 
 
-def controller(dx, g: Gains, integ, v_target, dt, yaw_ref=0.0):
-    """yaw_ref 추종 캐스케이드: heading → lean_ref → balance. k_yaw=0 이면 순수 직립."""
+def controller(dx, g: Gains, cs, v_target, dt, yaw_ref=0.0, path=None):
+    """캐스케이드: [lateral →] heading → lean_ref → balance. k_yaw=0 이면 순수 직립.
+    path=(px,py,chi) 를 주면 yaw_ref 대신 crosstrack 보정된 방위를 추종 (k_lat>0 필요).
+    cs = CtrlState (구 코드의 float integ 도 받음 — 속도 적분으로 승격)."""
+    if not isinstance(cs, CtrlState):
+        cs = CtrlState(v_i=float(cs))
     st = read_state(dx)
-    lean_ref = heading(st, g, yaw_ref)
+    corr = cs.lat_corr
+    if path is not None:
+        yaw_ref, corr = lateral(st, g, *path, corr_prev=cs.lat_corr, dt=dt,
+                                v_sched=v_target)
+    lean_ref, yaw_i = heading(st, g, yaw_ref, cs.yaw_i, dt, v_sched=v_target)
     u_m = balance_mass(st, g, lean_ref)
-    u_dr, integ = speed(st, g, integ, v_target, dt)
-    return jnp.array([u_m, u_dr]), integ, st
+    u_dr, v_i = speed(st, g, cs.v_i, v_target, dt)
+    return jnp.array([u_m, u_dr]), CtrlState(v_i, yaw_i, corr), st

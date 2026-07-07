@@ -7,5 +7,10 @@
   "ki_v": 0.5,
   "k_yaw": 0.2,
   "kd_yaw": 0.0,
-  "lean_max": 0.0087
+  "lean_max": 0.0524,
+  "ki_yaw": 0.05,
+  "k_lat": 0.08,
+  "kd_lat": 0.3,
+  "yaw_corr_max": 0.21,
+  "lat_slew": 0.026
 }

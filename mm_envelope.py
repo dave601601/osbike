@@ -78,16 +78,20 @@ def build_model(slope_deg, mu, bump_cm, seed):
 
 
 def run_one(task):
-    """한 (severity, delay, seed) 롤아웃 → 결과 dict. 결정론(CPU)."""
-    sev_i, delay_ms, seed = task
+    """한 (severity, delay, seed[, gains 오버라이드]) 롤아웃 → 결과 dict. 결정론(CPU)."""
+    sev_i, delay_ms, seed, *rest = task
+    over = rest[0] if rest else {}
     label, slope, mu, bump = SEVERITIES[sev_i]
     m, zt = build_model(slope, mu, bump, seed)
     K, _, _ = mm_lqr.design(m, y_max=STROKE, F_max=FORCE)
     M.CTRL_HI[M.A_SLIDE], M.CTRL_LO[M.A_SLIDE] = FORCE, -FORCE
     base = json.load(open("mm_lqr_gains.json"))
+    base.update(over)                       # 어블레이션용 (--k-lat 0 등)
     G = C.Gains(float(K[0]), float(K[1]), float(K[2]), float(K[3]),
                 base["kp_v"], base["ki_v"], base["k_yaw"], base["kd_yaw"],
-                base["lean_max"])
+                base["lean_max"], base.get("ki_yaw", 0.0),
+                base.get("k_lat", 0.0), base.get("kd_lat", 0.0),
+                base.get("yaw_corr_max", 0.21), base.get("lat_slew", 0.026))
 
     d = mujoco.MjData(m)
     a = np.radians(PERT_DEG) / 2
@@ -103,15 +107,24 @@ def run_one(task):
     ctrl_dt = CTRL_EVERY * M.DT
     slew = np.radians(SLEW_DPS) * ctrl_dt
     yaw_goal = np.radians(TURN_DEG)
-    integ, yref = 0.0, 0.0
+    cs, yref = C.CtrlState(), 0.0
+    px, py = 0.0, 0.0                       # 기준경로 앵커 (명령 방위로 v_target 적분)
     pending, cur = [], np.zeros(2)
     min_up_z, status, t_end = 1.0, "ok", HORIZON_S
-    for step in range(n_steps):
+    ct, ct_max = 0.0, 0.0                   # crosstrack (코스 유지 지표 — 생존만으론
+    for step in range(n_steps):             #  "내리막 항복" cheat 을 못 잡음)
         t = step * M.DT
         if step % CTRL_EVERY == 0:
             tgt = yaw_goal if t >= TURN_T else 0.0
             yref += float(np.clip(tgt - yref, -slew, slew))
-            ctrl, integ, _ = C.controller(d, G, integ, V_TARGET, ctrl_dt, yaw_ref=yref)
+            path = (px, py, yref) if base.get("k_lat", 0.0) > 0 else None
+            ctrl, cs, _ = C.controller(d, G, cs, V_TARGET, ctrl_dt,
+                                       yaw_ref=yref, path=path)
+            px += V_TARGET * ctrl_dt * np.cos(yref)
+            py += V_TARGET * ctrl_dt * np.sin(yref)
+            ct = float(-(d.qpos[0] - px) * np.sin(yref)
+                       + (d.qpos[1] - py) * np.cos(yref))
+            ct_max = max(ct_max, abs(ct))
             pending.append((step + n_delay, np.asarray(ctrl, dtype=float)))
         while pending and pending[0][0] <= step:
             cur = pending.pop(0)[1]
@@ -127,10 +140,14 @@ def run_one(task):
                                    and abs(d.qpos[1]) < HF_Y - 2.0):
             status, t_end = "edge", t     # 지형 이탈 = 판정 불가 (가짜 낙하 방지)
             break
+    qw, qx, qy, qz = d.qpos[3:7]
+    yaw_end = float(np.degrees(np.arctan2(2 * (qw * qz + qx * qy),
+                                          1 - 2 * (qy * qy + qz * qz))))
     return dict(sev=label, slope_deg=slope, mu=mu, bump_cm=bump,
                 delay_ms=delay_ms, seed=seed, survived=(status == "ok"),
                 status=status, t_end=round(float(t_end), 3), min_up_z=round(float(min_up_z), 4),
-                x_end=round(float(d.qpos[0]), 2), y_end=round(float(d.qpos[1]), 2))
+                x_end=round(float(d.qpos[0]), 2), y_end=round(float(d.qpos[1]), 2),
+                ct_end=round(ct, 2), ct_max=round(ct_max, 2), yaw_end=round(yaw_end, 1))
 
 
 def main():
@@ -138,9 +155,18 @@ def main():
     ap.add_argument("--seeds", type=int, default=40)
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--out", default="envelope_lqr.json")
+    ap.add_argument("--lean-max-deg", type=float, default=None,
+                    help="heading lean_max 오버라이드 [deg] (어블레이션)")
+    ap.add_argument("--k-lat", type=float, default=None,
+                    help="lateral 외곽루프 게인 오버라이드 (0=끔, 어블레이션)")
     args = ap.parse_args()
 
-    tasks = [(i, dms, s) for i in range(len(SEVERITIES))
+    over = {}
+    if args.lean_max_deg is not None:
+        over["lean_max"] = float(np.radians(args.lean_max_deg))
+    if args.k_lat is not None:
+        over["k_lat"] = args.k_lat
+    tasks = [(i, dms, s, over) for i in range(len(SEVERITIES))
              for dms in DELAYS_MS for s in range(args.seeds)]
     t0 = time.time()
     runs = []
@@ -160,7 +186,11 @@ def main():
                     print(f"  {k+1}/{len(tasks)}  ({time.time()-t0:.0f}s)",
                           file=sys.stderr, flush=True)
 
+    gj = json.load(open("mm_lqr_gains.json")); gj.update(over)
     cfg = dict(controller=f"LQR {FORCE:.0f}N + heading cascade + speed PI (50Hz ZOH)",
+               lean_max_deg=round(float(np.degrees(gj["lean_max"])), 2),
+               k_lat=gj.get("k_lat", 0.0), kd_lat=gj.get("kd_lat", 0.0),
+               yaw_corr_max_deg=round(float(np.degrees(gj.get("yaw_corr_max", 0.35))), 1),
                v_target=V_TARGET, turn_deg=TURN_DEG, turn_t=TURN_T, slew_dps=SLEW_DPS,
                horizon_s=HORIZON_S, physics_hz=round(1 / M.DT), ctrl_hz=round(1 / (CTRL_EVERY * M.DT)),
                force_n=FORCE, stroke_m=STROKE, pert_deg=PERT_DEG, seeds=args.seeds,
