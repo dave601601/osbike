@@ -41,9 +41,11 @@ class Policy:
             self.res_scale = RES_SCALE_FALLBACK.get(stage, 0.0)
 
     def __call__(self, obs):
-        obs = np.asarray(obs)[: self.in_dim]
-        x = np.clip((obs - self.nrm["mean"][: self.in_dim])
-                    / np.sqrt(self.nrm["var"][: self.in_dim] + 1e-8), -10.0, 10.0)
+        obs = np.asarray(obs)
+        assert obs.shape[-1] == self.in_dim, \
+            f"obs {obs.shape[-1]} ≠ 정책 입력 {self.in_dim} — 레이아웃은 CpuController 가 처리"
+        x = np.clip((obs - self.nrm["mean"]) / np.sqrt(self.nrm["var"] + 1e-8),
+                    -10.0, 10.0)
         for W, b in self.p["pi"][:-1]:
             x = np.tanh(x @ W + b)
         W, b = self.p["pi"][-1]
@@ -67,6 +69,7 @@ class CpuController:
         self.act_hist = np.zeros((EV.ACT_HIST, EV.ACT_DIM))
         self.cs = np.zeros(3)                    # [v_i, yaw_i, lat_corr]
         self.u_base = np.zeros(2)
+        self.frames = None                       # 첫 tick 에서 현재 코어로 채움
 
     def tick(self, d, yref, px, py, v_target):
         q, v = d.qpos, d.qvel
@@ -81,7 +84,19 @@ class CpuController:
                          q[EV.Q_STEER], v[EV.V_STEER], v[5], v_fwd,
                          np.sin(yref - yaw), np.cos(yref - yaw),
                          np.clip(ct / 5.0, -2, 2), np.clip(ctdot, -3, 3), v_target])
-        obs = np.concatenate([core, self.act_hist.ravel(), self.cs, self.u_base])
+        if self.frames is None:
+            self.frames = np.tile(core, (EV.N_FRAMES, 1))
+        else:
+            self.frames = np.roll(self.frames, 1, axis=0)
+            self.frames[0] = core
+        # obs 레이아웃은 ckpt 세대별 (신형 69 = 4프레임 / 구형 30·25 = 단일 프레임)
+        if self.pol.in_dim == EV.OBS_DIM:
+            obs = np.concatenate([self.frames.ravel(), self.act_hist.ravel(),
+                                  self.cs, self.u_base])
+        elif self.pol.in_dim == EV.CORE_DIM + EV.ACT_HIST * EV.ACT_DIM + 5:
+            obs = np.concatenate([core, self.act_hist.ravel(), self.cs, self.u_base])
+        else:
+            obs = np.concatenate([core, self.act_hist.ravel()])
         a = self.pol(obs)
         if self.res > 0:
             C, G = self.C, self.G

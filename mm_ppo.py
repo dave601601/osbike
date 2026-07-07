@@ -243,6 +243,9 @@ STAGES["res_hard2"] = STAGES["res"]._replace(delay_min=2, slope_lo=1.0,
 # residual 천장 어블레이션: res_scale=1.0 이면 clip(base+π)가 전 명령 공간을 커버
 # (base 는 prior 로 유지, ±30% 표현력 제약만 제거). ep_len 정체 2회의 원인 판정용.
 STAGES["res_full"] = STAGES["res_hard2"]._replace(res_scale=1.0)
+# 최종 조합 (교훈 3개 반영): 프레임 스태킹(POMDP 처방) + 지연 0-24ms 전 구간 혼합
+# (지연 하한 금지 — res_hard2 저지연 붕괴 교훈) + res_scale 1.0 (천장 제거).
+STAGES["res_v2"] = STAGES["res"]._replace(res_scale=1.0)
 
 
 def train(args):

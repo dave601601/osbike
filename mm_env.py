@@ -37,7 +37,12 @@ CTRL_DT = DT * CTRL_EVERY
 EP_LEN = 1500                       # 30s
 ACT_DIM = 2
 ACT_HIST = 6                        # 지연 최대 24ms(6 물리스텝) 커버
-OBS_DIM = 13 + ACT_HIST * ACT_DIM + 5   # +5 = base 적분기(3) + 직전 base 명령(2)
+CORE_DIM = 13
+N_FRAMES = 4                        # 코어 상태 프레임 스태킹 — 미지 지연·DR 파라미터는
+                                    # 잠재변수(POMDP)라 단일 프레임으론 식별 불가
+                                    # (명령 이력 × 상태 "반응" 이력이 있어야 추론 가능;
+                                    #  res_hard2 의 저지연 붕괴 98→12% 가 그 실증)
+OBS_DIM = CORE_DIM * N_FRAMES + ACT_HIST * ACT_DIM + 5   # +5 = base 적분기+직전 base 명령
 F_MAX, TAU_MAX = 60.0, 4.0
 STROKE = 0.15
 WHEEL_R = 0.30
@@ -77,6 +82,7 @@ class EnvState(NamedTuple):
     push_n: jnp.ndarray
     cs: jnp.ndarray                 # (3,) base 적분기 [v_i, yaw_i, lat_corr]
     u_base: jnp.ndarray             # (2,) 직전 base 명령 (정규화, obs용)
+    frames: jnp.ndarray             # (N_FRAMES, CORE_DIM) 코어 상태 이력, [0]=최신
     burnin: jnp.ndarray             # 초기 위상 랜덤화 세대 (에피소드 통계 제외)
     rng: jnp.ndarray
     ep_ret: jnp.ndarray
@@ -116,7 +122,7 @@ MODEL_AXES = MODEL_AXES.replace(
 
 STATE_AXES = EnvState(dx=0, t=0, v_target=0, yaw_goal=0, yref=0, pxy=0,
                       n_delay=0, act_buf=0, push_n=0, cs=0, u_base=0,
-                      burnin=0, rng=0, ep_ret=0, ep_len=0)
+                      frames=0, burnin=0, rng=0, ep_ret=0, ep_len=0)
 
 
 def _randomize_model(rng, dr: DR):
@@ -174,15 +180,18 @@ def _reset_one(rng, dr: DR, stagger=False):
     push_n = jax.random.uniform(k[4], (), minval=dr.push_lo, maxval=dr.push_n) \
         if dr.push_n > 0 else jnp.array(0.0)
     t0 = jax.random.randint(k[6], (), 0, EP_LEN) if stagger else jnp.array(0)
-    return EnvState(dx=dx, t=t0, v_target=v0, yaw_goal=yaw_goal,
-                    yref=jnp.array(0.0), pxy=jnp.zeros(2), n_delay=n_delay,
-                    act_buf=jnp.zeros((ACT_HIST + 1, ACT_DIM)), push_n=push_n,
-                    cs=jnp.zeros(3), u_base=jnp.zeros(2),
-                    burnin=jnp.array(stagger), rng=k[5],
-                    ep_ret=jnp.array(0.0), ep_len=jnp.array(0))
+    st = EnvState(dx=dx, t=t0, v_target=v0, yaw_goal=yaw_goal,
+                  yref=jnp.array(0.0), pxy=jnp.zeros(2), n_delay=n_delay,
+                  act_buf=jnp.zeros((ACT_HIST + 1, ACT_DIM)), push_n=push_n,
+                  cs=jnp.zeros(3), u_base=jnp.zeros(2),
+                  frames=jnp.zeros((N_FRAMES, CORE_DIM)),
+                  burnin=jnp.array(stagger), rng=k[5],
+                  ep_ret=jnp.array(0.0), ep_len=jnp.array(0))
+    return st._replace(frames=jnp.tile(_core(st), (N_FRAMES, 1)))
 
 
-def _obs(st: EnvState):
+def _core(st: EnvState):
+    """코어 상태 13 — 프레임 스태킹 단위."""
     q, v = st.dx.qpos, st.dx.qvel
     w, x, y, z = q[3], q[4], q[5], q[6]
     lean = -(2 * (y * z - w * x))
@@ -192,11 +201,15 @@ def _obs(st: EnvState):
     s, c = jnp.sin(st.yref), jnp.cos(st.yref)
     ct = -(q[0] - st.pxy[0]) * s + (q[1] - st.pxy[1]) * c
     ctdot = -v[0] * s + v[1] * c
-    core = jnp.array([lean, v[3], q[Q_SLIDE] / STROKE, v[V_SLIDE], q[Q_STEER],
+    return jnp.array([lean, v[3], q[Q_SLIDE] / STROKE, v[V_SLIDE], q[Q_STEER],
                       v[V_STEER], v[5], v_fwd, jnp.sin(yerr), jnp.cos(yerr),
                       jnp.clip(ct / 5.0, -2.0, 2.0), jnp.clip(ctdot, -3.0, 3.0),
                       st.v_target])
-    return jnp.concatenate([core, st.act_buf[:ACT_HIST].ravel(), st.cs, st.u_base])
+
+
+def _obs(st: EnvState):
+    return jnp.concatenate([st.frames.ravel(), st.act_buf[:ACT_HIST].ravel(),
+                            st.cs, st.u_base])
 
 
 def _step_one(st: EnvState, action, mxv, dr: DR):
@@ -237,6 +250,7 @@ def _step_one(st: EnvState, action, mxv, dr: DR):
                            st.dx.replace(xfrc_applied=xfrc))
     st2 = st._replace(dx=dx, t=st.t + 1, yref=yref, pxy=pxy, act_buf=act_buf,
                       cs=cs, u_base=u_base, rng=rng)
+    st2 = st2._replace(frames=jnp.roll(st.frames, 1, axis=0).at[0].set(_core(st2)))
     q, v = dx.qpos, dx.qvel
     w, x, y, z = q[3], q[4], q[5], q[6]
     up_z = 1 - 2 * (x * x + y * y)
