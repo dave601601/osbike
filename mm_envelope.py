@@ -32,6 +32,7 @@ from scipy.ndimage import gaussian_filter
 import mm_model as M
 import mm_lqr
 import mm_controller as C
+import mm_delay as D
 
 # --- 프로토콜 상수 (바꾸면 baseline 과 비교 불가 — 바꿀 땐 파일명을 바꿀 것) ---
 V_TARGET   = 1.5
@@ -80,9 +81,12 @@ def build_model(slope_deg, mu, bump_cm, seed):
 def run_one(task):
     """한 (severity, delay, seed[, gains 오버라이드]) 롤아웃 → 결과 dict. 결정론(CPU)."""
     sev_i, delay_ms, seed, *rest = task
-    over = rest[0] if rest else {}
+    over = dict(rest[0]) if rest else {}
+    variant = over.pop("ctrl", "base")      # base | smith4 | smith6 (지연보상)
     label, slope, mu, bump = SEVERITIES[sev_i]
     m, zt = build_model(slope, mu, bump, seed)
+    pred = (D.Predictor.smith4(m) if variant == "smith4"
+            else D.Predictor.smith6() if variant == "smith6" else None)
     K, _, _ = mm_lqr.design(m, y_max=STROKE, F_max=FORCE)
     M.CTRL_HI[M.A_SLIDE], M.CTRL_LO[M.A_SLIDE] = FORCE, -FORCE
     base = json.load(open("mm_lqr_gains.json"))
@@ -114,12 +118,20 @@ def run_one(task):
     ct, ct_max = 0.0, 0.0                   # crosstrack (코스 유지 지표 — 생존만으론
     for step in range(n_steps):             #  "내리막 항복" cheat 을 못 잡음)
         t = step * M.DT
+        # 릴리즈 pop 은 틱 앞뒤 두 번: 앞 = 예측용 cur 최신화(안 하면 한 주기 지연에서
+        # 두 틱 전 명령으로 예측하는 off-by-one), 뒤 = n_delay=0 즉시적용 유지.
+        while pending and pending[0][0] <= step:
+            cur = pending.pop(0)[1]
         if step % CTRL_EVERY == 0:
             tgt = yaw_goal if t >= TURN_T else 0.0
             yref += float(np.clip(tgt - yref, -slew, slew))
             path = (px, py, yref) if base.get("k_lat", 0.0) > 0 else None
+            xp = None
+            if pred is not None and n_delay > 0:
+                xp = pred.predict_seq(D.z6(C.read_state(d)),
+                                      D.horizon_seq(step, cur, pending, n_delay))
             ctrl, cs, _ = C.controller(d, G, cs, V_TARGET, ctrl_dt,
-                                       yaw_ref=yref, path=path)
+                                       yaw_ref=yref, path=path, x_pred4=xp)
             px += V_TARGET * ctrl_dt * np.cos(yref)
             py += V_TARGET * ctrl_dt * np.sin(yref)
             ct = float(-(d.qpos[0] - px) * np.sin(yref)
@@ -159,6 +171,8 @@ def main():
                     help="heading lean_max 오버라이드 [deg] (어블레이션)")
     ap.add_argument("--k-lat", type=float, default=None,
                     help="lateral 외곽루프 게인 오버라이드 (0=끔, 어블레이션)")
+    ap.add_argument("--ctrl", choices=("base", "smith4", "smith6"), default="base",
+                    help="지연보상 변형: smith4=해석 4-state, smith6=sysid 6-state 예측기")
     args = ap.parse_args()
 
     over = {}
@@ -166,6 +180,8 @@ def main():
         over["lean_max"] = float(np.radians(args.lean_max_deg))
     if args.k_lat is not None:
         over["k_lat"] = args.k_lat
+    if args.ctrl != "base":
+        over["ctrl"] = args.ctrl
     tasks = [(i, dms, s, over) for i in range(len(SEVERITIES))
              for dms in DELAYS_MS for s in range(args.seeds)]
     t0 = time.time()
@@ -187,7 +203,9 @@ def main():
                           file=sys.stderr, flush=True)
 
     gj = json.load(open("mm_lqr_gains.json")); gj.update(over)
-    cfg = dict(controller=f"LQR {FORCE:.0f}N + heading cascade + speed PI (50Hz ZOH)",
+    cfg = dict(controller=f"LQR {FORCE:.0f}N + heading cascade + speed PI (50Hz ZOH)"
+                          + (f" + {args.ctrl} 지연보상" if args.ctrl != "base" else ""),
+               delay_comp=args.ctrl,
                lean_max_deg=round(float(np.degrees(gj["lean_max"])), 2),
                k_lat=gj.get("k_lat", 0.0), kd_lat=gj.get("kd_lat", 0.0),
                yaw_corr_max_deg=round(float(np.degrees(gj.get("yaw_corr_max", 0.35))), 1),

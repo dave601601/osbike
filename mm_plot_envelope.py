@@ -39,9 +39,11 @@ ax.set_xlabel(f"Actuator delay [ms]  ({cfg['ctrl_hz']} Hz control)", fontsize=11
 ax.set_ylabel("Terrain severity  (slope / μ / bump)", fontsize=11.5)
 fig.suptitle("LQR combined survival rate:  terrain × delay", fontsize=14,
              fontweight="bold", y=0.965)
+comp = cfg.get("delay_comp", "base")
 ax.set_title(f"moving-mass, v={cfg['v_target']:g}, {cfg['turn_deg']:g}° turn, "
-             f"{cfg['horizon_s']:g} s hold, {cfg['seeds']} seeds", fontsize=10.5,
-             color="#555", pad=8)
+             f"{cfg['horizon_s']:g} s hold, {cfg['seeds']} seeds"
+             + (f", delay-comp: {comp} (exact model)" if comp != "base" else ""),
+             fontsize=10.5, color="#555", pad=8)
 ax.set_xticks(np.arange(-.5, len(delays), 1), minor=True)
 ax.set_yticks(np.arange(-.5, len(sevs), 1), minor=True)
 ax.grid(which="minor", color="white", linewidth=3); ax.tick_params(which="minor", length=0)

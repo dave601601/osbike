@@ -87,12 +87,18 @@ def read_state(dx) -> St:
     )
 
 
+def balance_from(x4, g: Gains, lean_ref=0.0):
+    """무게추 힘 = -(K·(x - x_ref)), x4=[lean, roll̇, y_m, ẏ]. 지연보상(Smith)은
+    예측 상태를 여기에 넣는다 (mm_delay.py)."""
+    F = -(g.k_lean * (x4[0] - lean_ref) + g.k_rrate * x4[1]
+          + g.k_y * x4[2] + g.k_ydot * x4[3])
+    return jnp.clip(F, M.CTRL_LO[M.A_SLIDE], M.CTRL_HI[M.A_SLIDE])
+
+
 def balance_mass(st: St, g: Gains, lean_ref=0.0):
     """무게추 힘 = -(K·(x - x_ref)). lean+(오른쪽) → 무게추를 왼쪽으로.
     lean_ref≠0 이면 그 기울기를 유지 → self-steering이 그쪽으로 선회 (무게추 조향)."""
-    F = -(g.k_lean * (st.lean - lean_ref) + g.k_rrate * st.roll_rate
-          + g.k_y * st.y_m + g.k_ydot * st.ydot)
-    return jnp.clip(F, M.CTRL_LO[M.A_SLIDE], M.CTRL_HI[M.A_SLIDE])
+    return balance_from((st.lean, st.roll_rate, st.y_m, st.ydot), g, lean_ref)
 
 
 def heading(st: St, g: Gains, yaw_ref, yaw_i=0.0, dt=0.0, v_sched=None):
@@ -136,9 +142,10 @@ def speed(st: St, g: Gains, integ, v_target, dt):
     return jnp.clip(tau, M.CTRL_LO[M.A_REAR], M.CTRL_HI[M.A_REAR]), integ
 
 
-def controller(dx, g: Gains, cs, v_target, dt, yaw_ref=0.0, path=None):
+def controller(dx, g: Gains, cs, v_target, dt, yaw_ref=0.0, path=None, x_pred4=None):
     """캐스케이드: [lateral →] heading → lean_ref → balance. k_yaw=0 이면 순수 직립.
     path=(px,py,chi) 를 주면 yaw_ref 대신 crosstrack 보정된 방위를 추종 (k_lat>0 필요).
+    x_pred4 를 주면 balance 가 예측 상태로 동작 (지연보상 — 외곽루프는 느려서 현재 상태).
     cs = CtrlState (구 코드의 float integ 도 받음 — 속도 적분으로 승격)."""
     if not isinstance(cs, CtrlState):
         cs = CtrlState(v_i=float(cs))
@@ -148,6 +155,9 @@ def controller(dx, g: Gains, cs, v_target, dt, yaw_ref=0.0, path=None):
         yaw_ref, corr = lateral(st, g, *path, corr_prev=cs.lat_corr, dt=dt,
                                 v_sched=v_target)
     lean_ref, yaw_i = heading(st, g, yaw_ref, cs.yaw_i, dt, v_sched=v_target)
-    u_m = balance_mass(st, g, lean_ref)
+    if x_pred4 is None:
+        u_m = balance_mass(st, g, lean_ref)
+    else:
+        u_m = balance_from(x_pred4, g, lean_ref)
     u_dr, v_i = speed(st, g, cs.v_i, v_target, dt)
     return jnp.array([u_m, u_dr]), CtrlState(v_i, yaw_i, corr), st
