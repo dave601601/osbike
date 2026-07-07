@@ -34,10 +34,12 @@ free-fork 연구 플랜트에서:
 - [x] ~~보강③: delay-aware 개선/방어~~ → **완료(결론 반전)**: smith4가 명목 sim에서 갭을
       거의 닫음 — 단 모델오차 ±5%에 붕괴(무보상 이하), smith6(steer 포함 sysid)은 롤포워드
       발산. `mm_delay.py`, `envelope_lqr_smith{4,6}.json`. RL 명분 = 강건성으로 정밀화.
-- [~] **RL 진행 중** ([상세](progress/rl.md)): MJX env+자체 PPO 구축, num_envs=16384 확정
-      (8GB 피크), **flat cold start 통과**(30s 완주 ~100%, sim2sim v=1.5 완벽 전이).
-      다음 = residual RL(base-LQR+잔차, full task+DR) → CPU 엔벨로프 채점 훅 →
-      3-way 비교(base/smith4/RL, 명목+파라미터 랜덤화 축). 보상 교훈: lean 벌점 캡 필수.
+- [~] **RL 진행 중** ([상세](progress/rl.md)): **res_v2@잔차0.5 가 base 를 전 셀에서 격파**
+      — s0.5×지연 55/10/5→78/52/22%, s0.75 20→38-48%, 악화 셀 없음, 모델 불요.
+      핵심 발견: ① 미지 지연/파라미터 = POMDP → **4프레임 스태킹** 필수 ② 무앵커
+      scale 1.0 은 과작동 국소최적 → 잔차 벌점+0.5 ③ hard 커리큘럼은 지연 0 포함 필수.
+      res_v3(일관 학습) 진행 중. 남은 것: 3-way 파라미터 랜덤화 평가축, smith4 와의
+      s0.5×12-16ms 격차. 교훈: lean 벌점 캡·res_scale ckpt 저장·burn-in 통계 제외.
 - [ ] 실기 system ID(조향마찰·접촉·지연 실측)→sim 보정→실전이.
 - [ ] passive 자가안정 속도창(≥8 m/s 확인됨) 정밀화, Whipple 비교.
 
