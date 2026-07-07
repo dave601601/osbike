@@ -5,10 +5,15 @@
 ## Open (현재 상태 스냅샷)
 
 - **연구 타겟 플랜트 가동**: `moving_mass_bicycle.xml` (free fork + 2kg/±0.15m 슬라이더).
-  4-state LQR로 **v≥0.5 m/s 주행 균형 20s 성공** (self-steering 동원 확인).
+  4-state LQR로 **v≥0.5 m/s 주행 균형 20s** + **무게추 조향(heading 캐스케이드)으로
+  완만 선회** 성공. self-steering 동원 확인.
   **v=0은 힘/스트로크 제약 지배로 LQR 불가** — MPC/RL 명분. 설계영역 1차: 추는
   가벼울수록 유리(반직관), 최적 2kg×0.15m. 상세: [mm](progress/mm.md).
-- 다음 본론: **PPO/SAC 학습 → LQR과 동일 지표 비교** (v_min, 회복한계, 외란).
+- **무게추 조향은 완만해야만 robust** (CPU 기준): slew ≤3°/s면 목표 heading 60°까지
+  lean 3~4°로 clean. slew↑는 marginal(lean 25°)·전복, **방향반전(S커브)은 authority 초과**.
+- **수치 marginality 경보**: 내부루프 F포화 87% ≈ bang-bang → **CPU-JAX vs GPU-JAX 궤적
+  상이**. 성능은 배포경로(CPU)로만 주장. 학습(GPU)→실기(CPU) sim2sim 갭 주의.
+- 다음 본론: **PPO/SAC 학습 → LQR과 동일 지표 비교** (v_min, 회복한계, 조향추종, 외란).
 
 ### reaction-wheel 스캐폴드 (완료 상태)
 

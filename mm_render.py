@@ -1,7 +1,9 @@
 """moving-mass free-fork 자전거 렌더 (격자 바닥, 추적 카메라).
 
 사용:  python mm_render.py <v_target> <out.mp4> [seconds] [pert_deg]
-       python mm_render.py 1.0 mm_ride_1ms.mp4 20 0.5
+       MM_YAW=turn30 python mm_render.py 2.0 mm_turn.mp4 20 0.5
+MM_YAW: straight(기본) | turn (+40° 완만 선회) | scurve(참고: 실패 케이스)
+무게추 조향은 완만해야 안정 — yaw_ref 슬루 3°/s (엔벨로프상 robust clean 영역).
 """
 import os, sys, json
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -49,10 +51,21 @@ cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
 cam.trackbodyid = mujoco.mj_name2id(rm, mujoco.mjtObj.mjOBJ_BODY, "frame")
 cam.distance, cam.azimuth, cam.elevation = 3.2, 120, -12
 
+MODE = os.environ.get("MM_YAW", "straight")
+def yaw_target(t):
+    if MODE in ("turn", "turn30"):
+        return np.radians(40.) if t >= 2 else 0.
+    if MODE == "scurve":          # 참고: 무게추 조향 authority 초과(전복) 데모
+        return np.radians(30.) if 2 <= t < 12 else (np.radians(-30.) if t >= 12 else 0.)
+    return 0.
+SLEW = np.radians(3.0)            # 완만 선회만 robust (엔벨로프 검증)
+
 renderer = mujoco.Renderer(rm, height=H, width=W)
 frames, min_up_z, x0 = [], 1.0, float(d.qpos[0])
+yref = 0.0
 for step in range(N_STEPS):
-    ctrl, integ, st = C.controller(d, G, integ, V_TARGET, M.DT)
+    yref += float(np.clip(yaw_target(step * M.DT) - yref, -SLEW * M.DT, SLEW * M.DT))
+    ctrl, integ, st = C.controller(d, G, integ, V_TARGET, M.DT, yaw_ref=yref)
     d.ctrl[:] = np.asarray(ctrl)
     mujoco.mj_step(rm, d)
     min_up_z = min(min_up_z, float(np.asarray(st.up_z)))

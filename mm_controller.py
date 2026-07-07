@@ -15,6 +15,8 @@ class Gains(NamedTuple):
     k_lean: float; k_rrate: float; k_y: float; k_ydot: float
     # speed (rear drive) PI
     kp_v: float;   ki_v: float
+    # heading (yaw_ref → lean_ref, 무게추 유도 카운터스티어). 기본 0 = 직진 전용
+    k_yaw: float = 0.0; kd_yaw: float = 0.0; lean_max: float = 0.035
 
 
 class St(NamedTuple):
@@ -27,6 +29,7 @@ class St(NamedTuple):
     steer_rate: float
     v_fwd: float
     yaw: float
+    yaw_rate: float
     y_lat: float
 
 
@@ -38,6 +41,7 @@ def _quat_to_yaw(q):
 def read_state(dx) -> St:
     q, v = dx.qpos, dx.qvel
     w, x, y, z = q[3], q[4], q[5], q[6]
+    yaw = _quat_to_yaw(q[M.Q_QUAT])
     return St(
         lean       = -(2 * (y * z - w * x)),
         up_z       = 1 - 2 * (x * x + y * y),
@@ -46,17 +50,28 @@ def read_state(dx) -> St:
         ydot       = v[M.V_SLIDE],
         steer      = q[M.Q_STEER],
         steer_rate = v[M.V_STEER],
-        v_fwd      = v[0],
-        yaw        = _quat_to_yaw(q[M.Q_QUAT]),
+        # body-forward 속도 (선회 시 world-x 로 추종하면 속도루프가 헛돎)
+        v_fwd      = v[0] * jnp.cos(yaw) + v[1] * jnp.sin(yaw),
+        yaw        = yaw,
+        yaw_rate   = v[5],
         y_lat      = q[1],
     )
 
 
-def balance_mass(st: St, g: Gains):
-    """무게추 힘 = -(K·x). lean+(오른쪽) → 무게추를 왼쪽으로 (CoM을 접촉선 왼쪽에)."""
-    F = -(g.k_lean * st.lean + g.k_rrate * st.roll_rate
+def balance_mass(st: St, g: Gains, lean_ref=0.0):
+    """무게추 힘 = -(K·(x - x_ref)). lean+(오른쪽) → 무게추를 왼쪽으로.
+    lean_ref≠0 이면 그 기울기를 유지 → self-steering이 그쪽으로 선회 (무게추 조향)."""
+    F = -(g.k_lean * (st.lean - lean_ref) + g.k_rrate * st.roll_rate
           + g.k_y * st.y_m + g.k_ydot * st.ydot)
     return jnp.clip(F, M.CTRL_LO[M.A_SLIDE], M.CTRL_HI[M.A_SLIDE])
+
+
+def heading(st: St, g: Gains, yaw_ref):
+    """yaw 오차 → lean_ref. 좌회전(yaw+)엔 왼쪽 기울기(lean−) 필요 → 부호 음수.
+    lean_max 로 제한: 무게추 정적 권한(≈2.5°) 안에서만 기울인다."""
+    err = jnp.arctan2(jnp.sin(yaw_ref - st.yaw), jnp.cos(yaw_ref - st.yaw))
+    lean_ref = -(g.k_yaw * err - g.kd_yaw * st.yaw_rate)
+    return jnp.clip(lean_ref, -g.lean_max, g.lean_max)
 
 
 def speed(st: St, g: Gains, integ, v_target, dt):
@@ -66,8 +81,10 @@ def speed(st: St, g: Gains, integ, v_target, dt):
     return jnp.clip(tau, M.CTRL_LO[M.A_REAR], M.CTRL_HI[M.A_REAR]), integ
 
 
-def controller(dx, g: Gains, integ, v_target, dt):
+def controller(dx, g: Gains, integ, v_target, dt, yaw_ref=0.0):
+    """yaw_ref 추종 캐스케이드: heading → lean_ref → balance. k_yaw=0 이면 순수 직립."""
     st = read_state(dx)
-    u_m = balance_mass(st, g)
+    lean_ref = heading(st, g, yaw_ref)
+    u_m = balance_mass(st, g, lean_ref)
     u_dr, integ = speed(st, g, integ, v_target, dt)
     return jnp.array([u_m, u_dr]), integ, st

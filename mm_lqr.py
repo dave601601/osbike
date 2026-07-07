@@ -81,7 +81,10 @@ def design(model=None, lean_max_deg=4.0, rrate_max=0.5, y_max=0.15, ydot_max=1.0
 
 if __name__ == "__main__":
     np.set_printoptions(precision=4, suppress=True)
-    K, eig, (Mtot, h, I0, m_s, hm, c) = design()
+    # 주행 운전점용 설계: (10°,5N) — v=2.0 직진에서 리밋사이클 없이 진짜 수렴하는 조합.
+    # (공격적 (4°,20N)은 즉시 포화 bang-bang → lean ±2° 리밋사이클: 직진 '생존'은 하지만
+    #  기준값 램프 등 섭동과 위상이 맞으면 전복 — 조향 실험에서 발각)
+    K, eig, (Mtot, h, I0, m_s, hm, c) = design(lean_max_deg=10.0, F_max=5.0)
     g = 9.81
     print("=== 파라미터 ===")
     print(f"  M={Mtot:.2f}kg h={h:.3f}m I0={I0:.3f}kg·m²  slider m={m_s}kg hm={hm:.3f}m c={c}")
@@ -91,7 +94,11 @@ if __name__ == "__main__":
     print("\n=== 4-state LQR ===")
     print(f"  K = {K}   (u = -(K·x) 관례, mm_controller.balance_mass)")
     print(f"  closed-loop |eig| = {np.abs(eig)}  안정: {np.all(np.abs(eig) < 1)}")
+    # heading(무게추 조향): 검증 운전점 v=2.0, 스텝+30° 20s 추종(최종 26.9°).
+    # yaw_ref는 호출부에서 슬루 제한(≈10°/s) 권장. lean_max=0.5°(0.0087rad) —
+    # 무게추 조향은 본질적으로 완만 (지속 lean 유지에 스트로크 소모).
     full = dict(k_lean=float(K[0]), k_rrate=float(K[1]), k_y=float(K[2]),
-                k_ydot=float(K[3]), kp_v=2.0, ki_v=0.5)
+                k_ydot=float(K[3]), kp_v=2.0, ki_v=0.5,
+                k_yaw=0.2, kd_yaw=0.0, lean_max=0.0087)
     json.dump(full, open("mm_lqr_gains.json", "w"), indent=2)
-    print("-> mm_lqr_gains.json 저장")
+    print("-> mm_lqr_gains.json 저장 (balance LQR + heading + speed PI)")
