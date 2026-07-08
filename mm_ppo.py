@@ -265,7 +265,11 @@ def train(args):
         with open(args.init, "rb") as f:
             saved = pickle.load(f)
         params, nrm = saved["params"], saved["nrm"]
-        print(f"[init] {args.init}")
+        if args.reset_log_std:
+            # 커리큘럼 함정: 전 스테이지에서 σ가 하한까지 수렴한 채 넘어오면 새 도메인
+            # 탐색 불가 (pure_dr: 경사 course-hold 미학습 → heading 항복 실증)
+            params = dict(params, log_std=jnp.full_like(params["log_std"], -1.0))
+        print(f"[init] {args.init} (log_std reset={args.reset_log_std})")
     else:
         nrm = norm_init(E.OBS_DIM)
     opt = adam_init(params)
@@ -374,6 +378,8 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--run", default="")
     ap.add_argument("--init", default="", help="체크포인트에서 이어서")
+    ap.add_argument("--reset-log-std", action="store_true",
+                    help="init 시 log_std 를 -1.0 으로 리셋 (새 도메인 탐색 회복)")
     ap.add_argument("--log-every", type=int, default=5)
     ap.add_argument("--ckpt-every", type=int, default=50)
     ap.add_argument("--wandb", choices=("auto", "off"), default="auto",
