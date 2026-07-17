@@ -50,6 +50,7 @@ free-fork 연구 플랜트에서:
   cold start·sim2sim. 다음 = residual RL.
 - [mm](progress/mm.md) — 연구 타겟(moving-mass+free-fork) 시간순 상세: 설계·조향·힘임계·v_min·
   realism·slip·정지출발·stress-test(지연/지형/결합)·40-seed 엔벨로프 정정·외곽루프(코스유지)·
-  **Smith predictor 반전(결합×지연 닫힘, 단 모델오차 ±5%에 붕괴)**.
+  **Smith predictor 반전(결합×지연 닫힘, 단 모델오차 ±5%에 붕괴)**·
+  **액추에이터 수요 실측→NEMA17 부적합, 60N/3m/s/150-250W BLDC+FOC 권장**.
 - [lqr](progress/lqr.md) — (스캐폴드) LQR 플라이휠 균형 설계 과정.
 - [plant](progress/plant.md) — (스캐폴드) 유령 브레이크 제거·trail 74mm·재측정.
