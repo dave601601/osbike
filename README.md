@@ -188,6 +188,26 @@ training domain, having baked in a fixed lead correction it could no longer tell
 unnecessary. Stacking 4 core-state frames fixed it. Stacking 8 changes nothing, so this
 is a threshold, not a gradient.
 
+### Why it is a residual and not a policy
+
+Removing the classical base and training pure PPO on the same budget (210M steps, same
+curriculum) produces a policy that rides flat ground, turns, and handles delay and
+parameter noise, and then **scores 0% on every envelope row**. Every row carries at least
+1° of side slope, and cross-slope course holding is the one skill it never finds:
+deterministic rollouts inside its own training world fall 0 of 64 on a fixed 2° slope.
+
+Its in-domain episode length looks healthy at 622 ticks, but that is a mixture of long
+low-slope episodes and short sloped ones. Under a survival-dominated reward, "drift
+downhill and survive a while" is a local optimum, and the policy settles there. Resetting
+the exploration noise on curriculum transfer buys 15% in-domain and does not change the
+outcome, so this is not an exploration failure.
+
+Cross-slope course holding also took deliberate engineering on the classical side, a lean
+schedule with heading integral, a lateral outer loop and slew guards. So the division of
+labour is not arbitrary: the classical prior contributes exactly the structured skill that
+search does not find, and the learned residual contributes the parameter robustness the
+fixed design lacks. Neither component reaches the composite alone.
+
 ---
 
 ## How precisely can any of this be measured
