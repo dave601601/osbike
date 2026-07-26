@@ -4,6 +4,12 @@
 
 > **종합 정리는 [SUMMARY.md](SUMMARY.md)** (결론 중심, 제안서용). 아래는 현재 스냅샷 + 다음 할 일.
 
+> **경로 안내 (2026-07-26 레포 정리):** 아래 로그의 파일명은 그대로 유효하지만 위치가 바뀌었다.
+> 모듈 `mm_*.py` → `src/mm/`, 스캐폴드(`model.py`·`lqr.py` 등) → `src/rw/`,
+> 플랜트 XML → `assets/`, 게인·sysid JSON → `params/`, `envelope_*.json` → `results/envelopes/`.
+> 실행은 `python mm_envelope.py …` → **`python src/mm/mm_envelope.py …`** (CWD 무관.
+> 경로는 `mm_model.ROOT` 가 레포 루트 기준으로 해결). 영문 개요는 [../README.md](../README.md).
+
 ## Open (현재 상태 스냅샷)
 
 **고전제어(LQR) baseline 완결 + 40-seed 엔벨로프 확정(`mm_envelope.py`).** moving-mass +

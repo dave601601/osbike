@@ -130,7 +130,7 @@ def run_one(task):
         rlc = MP.CpuController(pol_path, res_scale=rl_res)
     K, _, _ = mm_lqr.design(_nominal_model(), y_max=STROKE, F_max=FORCE)
     M.CTRL_HI[M.A_SLIDE], M.CTRL_LO[M.A_SLIDE] = FORCE, -FORCE
-    base = json.load(open("mm_lqr_gains.json"))
+    base = json.load(open(M.PARAMS / "mm_lqr_gains.json"))
     base.update(over)                       # 어블레이션용 (--k-lat 0 등)
     G = C.Gains(float(K[0]), float(K[1]), float(K[2]), float(K[3]),
                 base["kp_v"], base["ki_v"], base["k_yaw"], base["kd_yaw"],
@@ -210,7 +210,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=40)
     ap.add_argument("--workers", type=int, default=12)
-    ap.add_argument("--out", default="envelope_lqr.json")
+    ap.add_argument("--out", default=str(M.RESULTS / "envelopes" / "envelope_lqr.json"))
     ap.add_argument("--lean-max-deg", type=float, default=None,
                     help="heading lean_max 오버라이드 [deg] (어블레이션)")
     ap.add_argument("--k-lat", type=float, default=None,
@@ -259,7 +259,7 @@ def main():
                     print(f"  {k+1}/{len(tasks)}  ({time.time()-t0:.0f}s)",
                           file=sys.stderr, flush=True)
 
-    gj = json.load(open("mm_lqr_gains.json")); gj.update(over)
+    gj = json.load(open(M.PARAMS / "mm_lqr_gains.json")); gj.update(over)
     cfg = dict(controller=f"LQR {FORCE:.0f}N + heading cascade + speed PI (50Hz ZOH)"
                           + (f" + {args.ctrl} 지연보상" if args.ctrl != "base" else ""),
                delay_comp=args.ctrl, policy=args.policy, param_err=args.param_err,

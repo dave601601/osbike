@@ -121,5 +121,5 @@ if __name__ == "__main__":
     #   정지 균형 / 정지출발→2m/s 추종(4s) / 주행 균형 모두 20s 완주 (2° 섭동).
     full = dict(kp_lean=float(K[0]), kd_lean=float(K[1]), kw_fw=float(K[2]),
                 k_ls=-2.0, kp_steer=2.0, kd_steer=0.5, kp_v=2.0, ki_v=0.5)
-    json.dump(full, open("lqr_gains.json", "w"), indent=2)
-    print("\n-> lqr_gains.json 저장 (balance=LQR, steer=lean예측+센터링, speed=PI)")
+    json.dump(full, open(M.PARAMS / "lqr_gains.json", "w"), indent=2)
+    print("\n-> params/lqr_gains.json 저장 (balance=LQR, steer=lean예측+센터링, speed=PI)")

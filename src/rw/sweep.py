@@ -50,5 +50,5 @@ if __name__ == "__main__":
         print(f"  {k:8s} = {v:.4f}")
 
     import json
-    json.dump(bg._asdict(), open("best_gains.json", "w"), indent=2)
-    print("-> best_gains.json 저장")
+    json.dump(bg._asdict(), open(M.PARAMS / "best_gains.json", "w"), indent=2)
+    print("-> params/best_gains.json 저장")

@@ -59,7 +59,7 @@ def init_pose(m, d, v0, slope_deg=SLOPE_DEG, pert_deg=0.5):
 def make_gains(m):
     import json
     K, _, _ = mm_lqr.design(m, y_max=0.15, F_max=FORCE)
-    b = json.load(open("mm_lqr_gains.json"))
+    b = json.load(open(M.PARAMS / "mm_lqr_gains.json"))
     return C.Gains(*[float(k) for k in K], b["kp_v"], b["ki_v"], b["k_yaw"],
                    b["kd_yaw"], b["lean_max"], b["ki_yaw"], b["k_lat"],
                    b["kd_lat"], b["yaw_corr_max"], b["lat_slew"])

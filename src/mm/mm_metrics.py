@@ -113,7 +113,7 @@ def report(name, mtr):
 
 if __name__ == "__main__":
     import json
-    G_lqr = C.Gains(**json.load(open("mm_lqr_gains.json")))
+    G_lqr = C.Gains(**json.load(open(M.PARAMS / "mm_lqr_gains.json")))
     # 부드러운 소게인 PD (balance_mass 형식: K=[kp,kd,ky,k_ydot]). 중속에서만 유효.
     G_pd = C.Gains(30.0, 8.0, 5.0, 0.5, 2.0, 0.5)
 

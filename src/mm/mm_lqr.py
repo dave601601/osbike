@@ -105,5 +105,5 @@ if __name__ == "__main__":
                 k_ydot=float(K[3]), kp_v=2.0, ki_v=0.5,
                 k_yaw=0.2, kd_yaw=0.0, lean_max=0.0524, ki_yaw=0.05,
                 k_lat=0.08, kd_lat=0.3, yaw_corr_max=0.21, lat_slew=0.026)
-    json.dump(full, open("mm_lqr_gains.json", "w"), indent=2)
-    print("-> mm_lqr_gains.json 저장 (balance LQR + heading + speed PI)")
+    json.dump(full, open(M.PARAMS / "mm_lqr_gains.json", "w"), indent=2)
+    print("-> params/mm_lqr_gains.json 저장 (balance LQR + heading + speed PI)")

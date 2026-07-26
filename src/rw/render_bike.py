@@ -20,7 +20,7 @@ import controller as C
 import lqr
 
 V_TARGET = float(sys.argv[1]) if len(sys.argv) > 1 else 2.0
-OUT      = sys.argv[2] if len(sys.argv) > 2 else "/home/bike/bike/balance_lqr_drive_20s.mp4"
+OUT      = sys.argv[2] if len(sys.argv) > 2 else str(M.ROOT / "balance_lqr_drive_20s.mp4")
 SECONDS  = float(sys.argv[3]) if len(sys.argv) > 3 else 20.0
 N_STEPS  = int(SECONDS / M.DT)
 FRAME_EVERY, FPS, W, H = 8, 30, 720, 480
@@ -47,10 +47,10 @@ if HALFWIDTH:
                       f'fromto="0 -{HALFWIDTH} 0  0 {HALFWIDTH} 0"')
 rm = mujoco.MjModel.from_xml_string(xml)   # render model (checker floor)
 
-# --- gains: lqr_gains.json 단일 소스 (없으면 python lqr.py 로 생성) ---
+# --- gains: params/lqr_gains.json 단일 소스 (없으면 python src/rw/lqr.py 로 생성) ---
 import json
-if os.path.exists("lqr_gains.json"):
-    G = C.Gains(**json.load(open("lqr_gains.json")))
+if os.path.exists(M.PARAMS / "lqr_gains.json"):
+    G = C.Gains(**json.load(open(M.PARAMS / "lqr_gains.json")))
 else:
     K, _ = lqr.flywheel_balance()
     G = C.Gains(float(K[0]), float(K[1]), float(K[2]), -2.0, 2.0, 0.5, 2.0, 0.5)

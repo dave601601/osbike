@@ -30,7 +30,7 @@ import mm_model as M
 import mm_lqr
 import mm_controller as C
 
-SYSID_JSON = "mm_sysid_6state.json"
+SYSID_JSON = str(M.PARAMS / "mm_sysid_6state.json")
 
 
 def z6(st):
@@ -96,7 +96,7 @@ def _flat_model(force=60.0):
 def _gains(m, force=60.0):
     K, _, _ = mm_lqr.design(m, y_max=0.15, F_max=force)
     M.CTRL_HI[M.A_SLIDE], M.CTRL_LO[M.A_SLIDE] = force, -force
-    b = json.load(open("mm_lqr_gains.json"))
+    b = json.load(open(M.PARAMS / "mm_lqr_gains.json"))
     return C.Gains(*[float(k) for k in K], b["kp_v"], b["ki_v"], b["k_yaw"],
                    b["kd_yaw"], b["lean_max"], b["ki_yaw"], b["k_lat"],
                    b["kd_lat"], b["yaw_corr_max"], b["lat_slew"])

@@ -1,10 +1,16 @@
 """모델 로드 + 신호 인덱스 상수. mx는 모든 world가 공유하는 정적 모델."""
 import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")   # VRAM 통째 선점 방지
+from pathlib import Path
 import mujoco
 from mujoco import mjx
 
-XML = "reaction_wheel_bicycle.xml"
+# --- 레포 루트 기준 경로 (CWD 무관). src/rw/model.py → parents[2] = 레포 루트.
+ROOT   = Path(__file__).resolve().parents[2]
+ASSETS = ROOT / "assets"
+PARAMS = ROOT / "params"
+
+XML = str(ASSETS / "reaction_wheel_bicycle.xml")
 
 m  = mujoco.MjModel.from_xml_path(XML)   # CPU 모델 (뷰어/초기화용)
 mx = mjx.put_model(m)                     # GPU 모델 (배치 시뮬 공유)

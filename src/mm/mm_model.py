@@ -1,10 +1,18 @@
 """moving-mass 플랜트 로드 + 신호 인덱스. (reaction-wheel 스택의 model.py와 병렬 구조)"""
 import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+from pathlib import Path
 import mujoco
 from mujoco import mjx
 
-XML = "moving_mass_bicycle.xml"
+# --- 레포 루트 기준 경로 (CWD 무관). src/mm/mm_model.py → parents[2] = 레포 루트.
+# mm_* 모듈은 전부 이 파일을 import 하므로 여기가 경로 단일 소스.
+ROOT    = Path(__file__).resolve().parents[2]
+ASSETS  = ROOT / "assets"
+PARAMS  = ROOT / "params"
+RESULTS = ROOT / "results"
+
+XML = str(ASSETS / "moving_mass_bicycle.xml")
 
 m  = mujoco.MjModel.from_xml_path(XML)
 mx = mjx.put_model(m)

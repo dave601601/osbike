@@ -1,0 +1,28 @@
+[project]
+name = "osbike"
+version = "0.1.0"
+description = "Low-speed bicycle self-balancing with a moving mass and a free fork: classical (LQR) baseline vs residual RL, scored on a shared terrain x delay envelope"
+requires-python = ">=3.12"
+
+# 스크립트는 레포 루트 기준으로 경로를 잡으므로 (mm_model.ROOT) 패키지 설치는 필요 없다.
+# 이 파일의 목적은 의존성 고정. `uv pip install -e .` 이면 아래 전부 들어온다.
+dependencies = [
+    "mujoco>=3.2",
+    "mujoco-mjx>=3.2",   # MJX 배치 학습 (mm_env, mm_ppo)
+    "jax>=0.4.30",
+    "numpy>=1.26",
+    "scipy>=1.11",       # solve_discrete_are, expm, gaussian_filter
+    "matplotlib>=3.8",   # mm_plot_envelope
+]
+
+[project.optional-dependencies]
+render = ["imageio[ffmpeg]>=2.34"]   # mm_render, mm_climb, render_bike
+rl = ["wandb>=0.17"]                 # mm_ppo 학습 로깅 (미로그인 시 offline 폴백)
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 설치할 임포트 패키지 없음. 의존성 전용 프로젝트 (스크립트는 src/ 에서 직접 실행).
+py-modules = []

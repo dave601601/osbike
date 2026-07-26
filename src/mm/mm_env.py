@@ -23,6 +23,7 @@ Domain randomization (에피소드 단위, DR() 기본값 = 전부 명목):
 """
 import json
 from functools import partial
+from pathlib import Path
 from typing import NamedTuple
 
 import jax
@@ -30,7 +31,9 @@ import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
 
-XML = "moving_mass_bicycle.xml"
+# 레포 루트 기준 (CWD 무관). mm_model 은 아래(L109)에서야 import 되므로 여기서 자체 계산.
+ROOT = Path(__file__).resolve().parents[2]
+XML = str(ROOT / "assets" / "moving_mass_bicycle.xml")
 DT = 0.004
 CTRL_EVERY = 5                      # 250Hz 물리 / 5 = 50Hz 제어
 CTRL_DT = DT * CTRL_EVERY
@@ -111,7 +114,7 @@ import mm_controller as C                  # noqa: E402
 import mm_lqr as _LQR                      # noqa: E402
 _MM.CTRL_HI[_MM.A_SLIDE], _MM.CTRL_LO[_MM.A_SLIDE] = F_MAX, -F_MAX
 _K4, _, _ = _LQR.design(_m, y_max=STROKE, F_max=F_MAX)
-_gj = json.load(open("mm_lqr_gains.json"))
+_gj = json.load(open(_MM.PARAMS / "mm_lqr_gains.json"))
 GAINS = C.Gains(float(_K4[0]), float(_K4[1]), float(_K4[2]), float(_K4[3]),
                 _gj["kp_v"], _gj["ki_v"], _gj["k_yaw"], _gj["kd_yaw"],
                 _gj["lean_max"], _gj["ki_yaw"], _gj["k_lat"], _gj["kd_lat"],

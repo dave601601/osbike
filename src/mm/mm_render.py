@@ -16,7 +16,7 @@ import mm_model as M
 import mm_controller as C
 
 V_TARGET = float(sys.argv[1]) if len(sys.argv) > 1 else 1.0
-OUT      = sys.argv[2] if len(sys.argv) > 2 else "/home/bike/bike/mm_ride_1ms.mp4"
+OUT      = sys.argv[2] if len(sys.argv) > 2 else str(M.ROOT / "mm_ride.mp4")
 SECONDS  = float(sys.argv[3]) if len(sys.argv) > 3 else 20.0
 PERT     = float(sys.argv[4]) if len(sys.argv) > 4 else 0.5
 N_STEPS  = int(SECONDS / M.DT)
@@ -69,7 +69,7 @@ if os.environ.get("MM_BUMP", ""):                    # hfield 높이 데이터 (
     h = gaussian_filter(np.random.RandomState(0).rand(nr, nc), sigma=sig)
     rm.hfield_data[:] = ((h - h.min()) / (h.max() - h.min())).ravel()
 
-base = json.load(open("mm_lqr_gains.json"))
+base = json.load(open(M.PARAMS / "mm_lqr_gains.json"))
 if FORCE:  # 힘에 맞게 balance LQR 재설계 + 컨트롤러 클립도 그 힘으로
     import mm_lqr
     f = float(FORCE)

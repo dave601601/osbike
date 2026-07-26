@@ -1,9 +1,11 @@
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+from pathlib import Path
 import jax, jax.numpy as jnp, mujoco, time
 from mujoco import mjx
 
-m = mujoco.MjModel.from_xml_path("reaction_wheel_bicycle.xml")
+ROOT = Path(__file__).resolve().parents[2]
+m = mujoco.MjModel.from_xml_path(str(ROOT / "assets" / "reaction_wheel_bicycle.xml"))
 mx = mjx.put_model(m)
 step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
 
