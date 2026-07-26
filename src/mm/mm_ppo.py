@@ -50,11 +50,57 @@ def mlp(ps, x):
 LOG_STD_MIN, LOG_STD_MAX = -2.5, 0.5   # 하한 = 탐색 floor (BC/NLL 붕괴 논의 참조)
 
 
-def init_params(rng, obs_dim, act_dim, hidden=(256, 256)):
+SPR_PROJ = 128
+
+
+def init_params(rng, obs_dim, act_dim, hidden=(256, 256), spr_k=0, coma=False):
+    # k1/k2 유도는 SPR/COMA 유무와 무관하게 고정 — 키 분할을 바꾸면 보조손실을 꺼도
+    # pi/v 초기화가 달라져서 "그것만 켠 대조군"이 성립하지 않는다.
     k1, k2 = jax.random.split(rng)
-    return dict(pi=mlp_init(k1, (obs_dim, *hidden, act_dim), 0.01),
-                v=mlp_init(k2, (obs_dim, *hidden, 1), 1.0),
-                log_std=jnp.full((act_dim,), -1.0))
+    p = dict(pi=mlp_init(k1, (obs_dim, *hidden, act_dim), 0.01),
+             v=mlp_init(k2, (obs_dim, *hidden, 1), 1.0),
+             log_std=jnp.full((act_dim,), -1.0))
+    if coma:
+        # action-conditioned 크리틱. counterfactual baseline = 잔차 0 (= base 단독).
+        p["q"] = mlp_init(jax.random.fold_in(rng, 2),
+                          (obs_dim + act_dim, *hidden, 1), 1.0)
+    if spr_k:
+        k3, k4, k5 = jax.random.split(jax.random.fold_in(rng, 1), 3)
+        # SPR (Schwarzer+ 2021) 보조 헤드. 인코더는 pi 트렁크를 그대로 씀 —
+        # 표현학습이 정책 표현에 실제로 작용해야 의미가 있고, 별도 인코더를 두면
+        # "표현 강화"가 정책과 무관한 곳에서만 일어난다.
+        lat = hidden[-1]
+        p["spr_tr"] = mlp_init(k3, (lat + act_dim, lat, lat), 1.0)   # 잠재 전이모델
+        p["spr_pj"] = mlp_init(k4, (lat, SPR_PROJ), 1.0)             # projection
+        p["spr_pd"] = mlp_init(k5, (SPR_PROJ, SPR_PROJ), 1.0)        # prediction
+    return p
+
+
+def encode(ps, x):
+    """pi 트렁크(마지막 층 제외) = SPR 인코더."""
+    for W, b in ps["pi"][:-1]:
+        x = jnp.tanh(x @ W + b)
+    return x
+
+
+def _l2n(x):
+    return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + 1e-8)
+
+
+def spr_loss(p, p_t, nob, act, alive):
+    """K-step latent 예측. nob (K+1,M,D) / act (K,M,A) / alive (K,M).
+
+    타깃은 EMA 타깃 인코더 + stop-grad (collapse 방지 — 온라인 인코더로 타깃을 만들면
+    상수 표현으로 붕괴한다). 손실은 코사인 유사도의 음수.
+    """
+    z = encode(p, nob[0])
+    tot = 0.0
+    for k in range(act.shape[0]):
+        z = mlp(p["spr_tr"], jnp.concatenate([z, act[k]], -1))
+        y = _l2n(mlp(p["spr_pd"], mlp(p["spr_pj"], z)))
+        t = _l2n(jax.lax.stop_gradient(mlp(p_t["spr_pj"], encode(p_t, nob[k + 1]))))
+        tot = tot - jnp.sum((y * t).sum(-1) * alive[k]) / (alive[k].sum() + 1e-8)
+    return tot / act.shape[0]
 
 
 def dist(params, obs):
@@ -74,6 +120,28 @@ def entropy_of(log_std):
 
 def value_of(params, obs):
     return mlp(params["v"], obs)[..., 0]
+
+
+def q_of(params, obs, act):
+    return mlp(params["q"], jnp.concatenate([obs, act], -1))[..., 0]
+
+
+def coma_adv(params, nob, act):
+    """COMA 식 counterfactual advantage, residual RL 판.
+
+    A = Q(s, a) - Q(s, 0). 잔차 0 은 곧 base 컨트롤러 단독이므로, 이 차이는
+    "이 잔차가 base 대비 실제로 보탠 것"이다. 원 COMA 는 이산 행동공간에서 다른
+    에이전트를 고정한 채 정확히 marginalize 하지만, 여기는 에이전트가 하나이고 행동이
+    연속이라 base(=0) 라는 자연스러운 기준점 하나로 대체한다.
+
+    주의: Q(s,0) 은 off-distribution 질의다 (정책이 0 근처를 자주 뽑지 않으면 외삽).
+    이게 이 방법의 알려진 약점이고, 실패하면 여기가 원인일 가능성이 가장 크다.
+    """
+    return q_of(params, nob, act) - q_of(params, nob, jnp.zeros_like(act))
+
+
+def _std_norm(x):
+    return (x - x.mean()) / (x.std() + 1e-8)
 
 # ---------------- Adam + grad clip (수제) ----------------
 
@@ -155,9 +223,28 @@ def gae(params, nrm, tr, last_obs, gamma=0.99, lam=0.95):
     return advs, advs + vals
 
 
-@partial(jax.jit, static_argnums=(6, 7))
+@partial(jax.jit, static_argnums=(2, 3))
+def build_spr_windows(tr, nrm, K, M, rng):
+    """(T,N) 롤아웃에서 K-step 윈도우 M개를 뽑아 (K+1,M,D)/(K,M,A)/(K,M) 로 반환.
+
+    평탄화 배치로는 시퀀스를 못 뽑으므로 별도 풀로 관리. alive 는 done 을 만나면 0 이
+    되는 누적 마스크 — 에피소드 경계를 넘는 예측은 학습신호가 아니라 잡음이다.
+    """
+    T, N = tr["done"].shape
+    kt, kn = jax.random.split(rng)
+    t0 = jax.random.randint(kt, (M,), 0, T - K)      # t+K 가 범위 안이어야 함
+    n0 = jax.random.randint(kn, (M,), 0, N)
+    nob = jnp.stack([norm_apply(nrm, tr["obs"][t0 + k, n0]) for k in range(K + 1)])
+    act = jnp.stack([tr["act"][t0 + k, n0] for k in range(K)])
+    dones = jnp.stack([tr["done"][t0 + k, n0] for k in range(K)]).astype(jnp.float32)
+    alive = jnp.cumprod(1.0 - dones, axis=0)
+    return dict(nob=nob, act=act, alive=alive)
+
+
+@partial(jax.jit, static_argnums=(6, 7), static_argnames=("coma",))
 def update(params, opt, nrm, batch, rng, lr, epochs, n_mb,
-           clip_eps=0.2, vf_coef=0.5, ent_coef=0.005):
+           clip_eps=0.2, vf_coef=0.5, ent_coef=0.005,
+           params_t=None, spr=None, spr_coef=0.0, coma=False):
     B = batch["obs"].shape[0]
     adv = batch["adv"]
     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
@@ -175,19 +262,35 @@ def update(params, opt, nrm, batch, rng, lr, epochs, n_mb,
         ent = entropy_of(log_std)
         kl = jnp.mean(mb["logp"] - lp)
         frac = jnp.mean((jnp.abs(ratio - 1) > clip_eps).astype(jnp.float32))
-        return l_pi + vf_coef * l_v - ent_coef * ent, (l_pi, l_v, ent, kl, frac)
+        l_spr = (spr_loss(p, params_t, mb["s_nob"], mb["s_act"], mb["s_alive"])
+                 if spr is not None else 0.0)
+        # Q 는 V 와 같은 타깃(GAE 리턴)으로 회귀. counterfactual 은 이 Q 로만 만든다.
+        l_q = 0.5 * jnp.mean((q_of(p, mb["nob"], mb["act"]) - mb["ret"]) ** 2) \
+            if coma else 0.0
+        tot = (l_pi + vf_coef * l_v - ent_coef * ent
+               + spr_coef * l_spr + vf_coef * l_q)
+        return tot, (l_pi, l_v, ent, kl, frac, l_spr, l_q)
 
     def epoch(carry, _):
         params, opt, rng = carry
         rng, k = jax.random.split(rng)
         idx = jax.random.permutation(k, B).reshape(n_mb, -1)
-        def mb_step(carry, ix):
+        # SPR 앵커는 별도 풀에서 n_mb 조각으로 나눠 쓴다 (PPO 미니배치와 인덱스 무관 —
+        # 시퀀스 윈도우라 평탄화 인덱스로는 못 뽑는다).
+        sidx = jnp.arange(spr["nob"].shape[1]).reshape(n_mb, -1) if spr is not None else None
+
+        def mb_step(carry, ixs):
             params, opt = carry
+            ix, six = ixs
             mb = jax.tree.map(lambda x: x[ix], batch)
+            if spr is not None:
+                mb = {**mb, "s_nob": spr["nob"][:, six], "s_act": spr["act"][:, six],
+                      "s_alive": spr["alive"][:, six]}
             (l, aux), g = jax.value_and_grad(loss_fn, has_aux=True)(params, mb)
             params, opt, gn = adam_step(params, g, opt, lr)
             return (params, opt), (l, *aux, gn)
-        (params, opt), stats = jax.lax.scan(mb_step, (params, opt), idx)
+        scan_in = (idx, sidx) if spr is not None else (idx, idx)
+        (params, opt), stats = jax.lax.scan(mb_step, (params, opt), scan_in)
         return (params, opt, rng), stats
     (params, opt, rng), stats = jax.lax.scan(epoch, (params, opt, rng), None,
                                              length=epochs)
@@ -255,12 +358,12 @@ STAGES["res_v3"] = STAGES["res"]._replace(res_scale=0.5, res_pen=0.05)
 def train(args):
     dr = STAGES[args.stage]
     run = args.run or f"{args.stage}_n{args.num_envs}"
-    outdir = os.path.join("ckpt", run)
+    outdir = os.path.join(E.ROOT, "ckpt", run)   # 레포 루트 기준 (CWD 무관)
     os.makedirs(outdir, exist_ok=True)
     log = open(os.path.join(outdir, "log.jsonl"), "a")
     rng = jax.random.PRNGKey(args.seed)
     rng, k1, k2 = jax.random.split(rng, 3)
-    params = init_params(k1, E.OBS_DIM, E.ACT_DIM)
+    params = init_params(k1, E.OBS_DIM, E.ACT_DIM, spr_k=args.spr, coma=bool(args.coma))
     if args.init:
         with open(args.init, "rb") as f:
             saved = pickle.load(f)
@@ -273,6 +376,7 @@ def train(args):
     else:
         nrm = norm_init(E.OBS_DIM)
     opt = adam_init(params)
+    params_t = jax.tree.map(lambda x: x, params) if args.spr else None
     wb = wandb_init(args, dr, run)
     st, mxv, _ = E.reset(k2, args.num_envs, dr)
     T, N = args.T, args.num_envs
@@ -287,9 +391,24 @@ def train(args):
         batch = dict(obs=flat(tr["obs"]), act=flat(tr["act"]),
                      logp=flat(tr["logp"]), adv=flat(adv), ret=flat(ret))
         nrm = norm_update(nrm, batch["obs"])
+        # COMA: 롤아웃 시점 파라미터로 counterfactual advantage 를 한 번만 계산해
+        # GAE adv 와 같은 위치에 넣는다 (에폭 중 재계산하면 PPO 의 고정-advantage
+        # 전제가 깨진다). warmup 동안은 Q 가 난수라 GAE 를 그대로 쓴다.
+        if args.coma and it >= args.coma_warmup:
+            nob_all = norm_apply(nrm, batch["obs"])
+            a_cf = coma_adv(params, nob_all, batch["act"])
+            batch["adv"] = ((1 - args.coma_mix) * _std_norm(batch["adv"])
+                            + args.coma_mix * _std_norm(a_cf))
+        spr = build_spr_windows(tr, nrm, args.spr, args.spr_anchors, ku) if args.spr else None
         params, opt, stats = update(params, opt, nrm, batch, ku,
-                                    args.lr, args.epochs, args.n_mb)
-        l, lpi, lv, ent, kl, frac, gn = [float(x) for x in stats]
+                                    args.lr, args.epochs, args.n_mb,
+                                    params_t=params_t, spr=spr,
+                                    spr_coef=args.spr_coef if args.spr else 0.0,
+                                    coma=bool(args.coma))
+        if args.spr:                       # 타깃 인코더 EMA (collapse 방지)
+            params_t = jax.tree.map(lambda t, o: args.spr_tau * t + (1 - args.spr_tau) * o,
+                                    params_t, params)
+        l, lpi, lv, ent, kl, frac, l_spr, l_q, gn = [float(x) for x in stats]
         steps = (it + 1) * T * N
         t_now = time.time()
         iter_s, t_prev = t_now - t_prev, t_now
@@ -329,14 +448,23 @@ def train(args):
         rec = dict(it=it, steps=steps, ep_ret=round(ret_ema, 1),
                    ep_len=round(len_ema, 1), ent=round(ent, 3), kl=round(kl, 5),
                    clipfrac=round(frac, 3), v_loss=round(lv, 2), sps=int(sps))
+        if args.spr:
+            rec["spr"] = round(l_spr, 4)   # -1 에 가까울수록 예측 성공 (코사인)
+        if args.coma:
+            rec["q_loss"] = round(l_q, 2)
         log.write(json.dumps(rec) + "\n"); log.flush()
         if it % args.log_every == 0:
             print(rec, flush=True)
         if it % args.ckpt_every == 0 or it == args.iters - 1:
             with open(os.path.join(outdir, f"params_{it:05d}.pkl"), "wb") as f:
+                # n_frames 는 obs 레이아웃을 결정하므로 반드시 저장 — 모듈 상수로
+                # 추론하면 학습/채점 프레임 수가 어긋나도 조용히 지나간다.
                 pickle.dump(dict(params=jax.device_get(params),
                                  nrm=jax.device_get(nrm), it=it,
-                                 stage=args.stage, dr=dr._asdict()), f)
+                                 stage=args.stage, dr=dr._asdict(),
+                                 n_frames=E.N_FRAMES, seed=args.seed,
+                                 spr=args.spr, spr_coef=args.spr_coef,
+                                 coma=args.coma, coma_mix=args.coma_mix), f)
     if wb is not None:
         wb.finish()
     print(f"done: {outdir}  ep_ret={ret_ema:.1f} ep_len={len_ema:.1f}")
@@ -384,6 +512,18 @@ if __name__ == "__main__":
     ap.add_argument("--ckpt-every", type=int, default=50)
     ap.add_argument("--wandb", choices=("auto", "off"), default="auto",
                     help="auto: 로그인 시 online, 아니면 offline 기록")
+    ap.add_argument("--spr", type=int, default=0,
+                    help="SPR 보조손실: K-step 잠재 예측 (0=끔, 8=다음 8 obs 예측)")
+    ap.add_argument("--spr-coef", type=float, default=1.0, help="SPR 손실 가중")
+    ap.add_argument("--spr-anchors", type=int, default=8192,
+                    help="iteration 당 SPR 윈도우 앵커 수 (전 배치는 메모리 초과)")
+    ap.add_argument("--spr-tau", type=float, default=0.99, help="타깃 인코더 EMA")
+    ap.add_argument("--coma", action="store_true",
+                    help="counterfactual advantage A=Q(s,a)-Q(s,0) (0=base 단독)")
+    ap.add_argument("--coma-mix", type=float, default=1.0,
+                    help="adv = (1-mix)*GAE + mix*counterfactual")
+    ap.add_argument("--coma-warmup", type=int, default=50,
+                    help="이 iteration 까지는 GAE 사용 (Q 가 아직 난수)")
     ap.add_argument("--sweep", action="store_true")
     args = ap.parse_args()
     if args.sweep:

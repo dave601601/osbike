@@ -30,8 +30,10 @@ class Policy:
     def __init__(self, path):
         d = pickle.load(open(path, "rb"))
         self.p, self.nrm = d["params"], d["nrm"]
-        self.meta = {k: d.get(k) for k in ("it", "stage")}
+        self.meta = {k: d.get(k) for k in ("it", "stage", "seed")}
         self.in_dim = self.p["pi"][0][0].shape[0]   # 구(25차원) ckpt 하위호환
+        # obs 레이아웃은 ckpt 가 정본. 없으면 모듈 기본(구 ckpt = 4프레임 시절).
+        self.n_frames = int(d.get("n_frames", EV.N_FRAMES))
         if "dr" in d:
             self.res_scale = float(d["dr"].get("res_scale", 0.0))
         else:
@@ -85,12 +87,15 @@ class CpuController:
                          np.sin(yref - yaw), np.cos(yref - yaw),
                          np.clip(ct / 5.0, -2, 2), np.clip(ctdot, -3, 3), v_target])
         if self.frames is None:
-            self.frames = np.tile(core, (EV.N_FRAMES, 1))
+            self.frames = np.tile(core, (self.pol.n_frames, 1))
         else:
             self.frames = np.roll(self.frames, 1, axis=0)
             self.frames[0] = core
-        # obs 레이아웃은 ckpt 세대별 (신형 69 = 4프레임 / 구형 30·25 = 단일 프레임)
-        if self.pol.in_dim == EV.OBS_DIM:
+        # obs 레이아웃은 ckpt 세대별 (스태킹형 = n_frames 개 / 구형 30·25 = 단일 프레임).
+        # 기대 차원은 ckpt 의 n_frames 로 계산 — 모듈 상수(EV.OBS_DIM)로 비교하면
+        # 다른 프레임 수로 학습된 ckpt 가 조용히 구형 레이아웃으로 falls through 한다.
+        stacked_dim = EV.CORE_DIM * self.pol.n_frames + EV.ACT_HIST * EV.ACT_DIM + 5
+        if self.pol.in_dim == stacked_dim:
             obs = np.concatenate([self.frames.ravel(), self.act_hist.ravel(),
                                   self.cs, self.u_base])
         elif self.pol.in_dim == EV.CORE_DIM + EV.ACT_HIST * EV.ACT_DIM + 5:

@@ -22,6 +22,7 @@ Domain randomization (에피소드 단위, DR() 기본값 = 전부 명목):
 주의: 학습(MJX/GPU) → 평가(CPU) sim2sim 갭 교훈 — 성능 주장은 CPU 하네스로만.
 """
 import json
+import os
 from functools import partial
 from pathlib import Path
 from typing import NamedTuple
@@ -41,10 +42,12 @@ EP_LEN = 1500                       # 30s
 ACT_DIM = 2
 ACT_HIST = 6                        # 지연 최대 24ms(6 물리스텝) 커버
 CORE_DIM = 13
-N_FRAMES = 4                        # 코어 상태 프레임 스태킹 — 미지 지연·DR 파라미터는
-                                    # 잠재변수(POMDP)라 단일 프레임으론 식별 불가
-                                    # (명령 이력 × 상태 "반응" 이력이 있어야 추론 가능;
-                                    #  res_hard2 의 저지연 붕괴 98→12% 가 그 실증)
+# 코어 상태 프레임 스태킹 — 미지 지연·DR 파라미터는 잠재변수(POMDP)라 단일 프레임으론
+# 식별 불가 (명령 이력 × 상태 "반응" 이력이 있어야 추론 가능; res_hard2 의 저지연 붕괴
+# 98→12% 가 그 실증). MM_N_FRAMES 로 어블레이션 (기본 4 = res_v2 조건, 바꾸지 말 것).
+# ★ ckpt 에 n_frames 를 저장하고 mm_policy 가 그걸 읽는다 — 모듈 상수로 추론하면
+#   학습 8프레임 / 채점 4프레임 같은 조용한 불일치가 난다 (res_scale 사고와 같은 종류).
+N_FRAMES = int(os.environ.get("MM_N_FRAMES", "4"))
 OBS_DIM = CORE_DIM * N_FRAMES + ACT_HIST * ACT_DIM + 5   # +5 = base 적분기+직전 base 명령
 F_MAX, TAU_MAX = 60.0, 4.0
 STROKE = 0.15
