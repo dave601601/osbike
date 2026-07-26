@@ -14,8 +14,16 @@ wheels/
 *.docx
 *.pdf
 *.png
+# ...except the committed envelope maps that README links to
+!results/figures/*.png
 
 # RL artifacts (로그·체크포인트·wandb 로컬 런)
 ckpt/
 wandb/
 .env*
+
+# 개인 문서 (레포에 올리지 않음)
+cv.tex
+cv.log
+cv.aux
+cv.out
