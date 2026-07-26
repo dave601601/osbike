@@ -58,12 +58,18 @@ HF_NR, HF_NC, HF_SIGMA = 1800, 60, 1.2   # mm_render 와 동일 해상도/스무
 from functools import lru_cache
 
 
-@lru_cache(maxsize=1)
-def _nominal_model():
-    """명목(무지형·무교란) 모델 — base 게인·smith 예측기 설계용."""
+def _nominal_model_copy():
+    """명목 모델의 **새 인스턴스**. --pred-err 처럼 제자리 수정할 때 쓴다 —
+    캐시된 _nominal_model() 을 수정하면 이후 모든 런의 설계 모델이 오염된다."""
     xml = open(M.XML).read().replace('ctrlrange="-20 20"',
                                      f'ctrlrange="-{FORCE} {FORCE}"')
     return mujoco.MjModel.from_xml_string(xml)
+
+
+@lru_cache(maxsize=1)
+def _nominal_model():
+    """명목(무지형·무교란) 모델 — base 게인·smith 예측기 설계용 (읽기 전용)."""
+    return _nominal_model_copy()
 
 
 def perturb_params(m, sev_i, delay_ms, seed, err):
@@ -109,26 +115,74 @@ def build_model(slope_deg, mu, bump_cm, seed):
     return m, zt
 
 
+def perturb_ctrl_model(m, pct, seed, sign="rand", target="mass_gain"):
+    """컨트롤러가 **믿는** 모델에 오차 주입 (--pred-err 전용, 제자리 수정).
+    플랜트 섭동은 위의 perturb_params 가 담당 — 이쪽은 플랜트를 건드리지 않는다.
+
+    sign   rand  = seed 별 ±pct 균일추첨. RL 학습 DR(_randomize_model)과 같은 의미.
+           plus/minus = 전 성분 동일 부호 = 계통오차. docs 의 "+5%" 표가 이쪽.
+                        (랜덤 추첨은 평균 0 이라 계통오차보다 훨씬 순하다 — 두 축을
+                         섞으면 "5%에서 붕괴" 같은 주장이 재현되지 않는다.)
+    target mass_gain   = 슬라이더·라이더 질량(관성 동반) + 액추에이터 게인. DR 축.
+           slider_mass = 슬라이더 질량만. docs 표가 실제로 흔든 것.
+    """
+    if sign == "rand":
+        rs = np.random.RandomState(100_000 + seed)
+        ms = 1.0 + pct * rs.uniform(-1.0, 1.0, 2)
+        gs = 1.0 + pct * rs.uniform(-1.0, 1.0, 2)
+    else:
+        s = 1.0 + (pct if sign == "plus" else -pct)
+        ms = gs = np.array([s, s])
+    bid_s = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "mass_slider")
+    bid_r = int(m.geom_bodyid[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "rider")])
+    hits = [(bid_s, ms[0])] if target == "slider_mass" else [(bid_s, ms[0]), (bid_r, ms[1])]
+    for bid, s in hits:
+        m.body_mass[bid] *= s
+        m.body_inertia[bid] *= s
+    if target == "mass_gain":
+        m.actuator_gainprm[0, 0] *= gs[0]
+        m.actuator_gainprm[1, 0] *= gs[1]
+    return m
+
+
 def run_one(task):
     """한 (severity, delay, seed[, gains 오버라이드]) 롤아웃 → 결과 dict. 결정론(CPU)."""
     sev_i, delay_ms, seed, *rest = task
     over = dict(rest[0]) if rest else {}
     variant = over.pop("ctrl", "base")      # base | smith4 | smith6 | rl
     pol_path = over.pop("policy", "")
-    param_err = float(over.pop("param_err", 0.0))
+    param_err = float(over.pop("param_err", 0.0) or 0.0)
+    pred_err = float(over.pop("pred_err", 0.0) or 0.0)
+    err_sign = over.pop("err_sign", "rand")
+    err_target = over.pop("err_target", "mass_gain")
+    pred_scope = over.pop("pred_scope", "all")
+    gain_jitter = float(over.pop("gain_jitter", 0.0) or 0.0)
     label, slope, mu, bump = SEVERITIES[sev_i]
     m, zt = build_model(slope, mu, bump, seed)
     perturb_params(m, sev_i, delay_ms, seed, param_err)
     # 게인·예측기는 항상 "명목" 모델로 설계 — 교란된 플랜트에서 설계하면 컨트롤러가
-    # 참값을 아는 치팅 (무교란 시 지형 모델과 파라미터 동일 → 기존 데이터와 비트동일)
-    pred = (D.Predictor.smith4(_nominal_model()) if variant == "smith4"
+    # 참값을 아는 치팅 (무교란 시 지형 모델과 파라미터 동일 → 기존 데이터와 비트동일).
+    # --pred-err 는 그 명목 모델 자체를 틀리게 만드는 별개 축 (플랜트는 명목).
+    m_ctrl = m_pred = _nominal_model()
+    if pred_err:
+        m_bad = perturb_ctrl_model(_nominal_model_copy(), pred_err, seed,
+                                   err_sign, err_target)
+        m_pred = m_bad
+        if pred_scope == "all":             # 게인도 틀린 모델로 설계 (현실적)
+            m_ctrl = m_bad                  # predictor: 게인은 명목 유지 (docs 원본)
+    pred = (D.Predictor.smith4(m_pred) if variant == "smith4"
             else D.Predictor.smith6() if variant == "smith6" else None)
     rl_res = over.pop("res_scale_eval", None)
     rlc = None
     if variant == "rl":
         import mm_policy as MP              # 늦은 import (고전 채점 경로 무부담)
         rlc = MP.CpuController(pol_path, res_scale=rl_res)
-    K, _, _ = mm_lqr.design(_nominal_model(), y_max=STROKE, F_max=FORCE)
+    K, _, _ = mm_lqr.design(m_ctrl, y_max=STROKE, F_max=FORCE)
+    if gain_jitter:
+        # 노이즈 바닥 측정용: 컨트롤러 구조는 그대로 두고 게인만 미세하게 흔든다.
+        # 이 스프레드가 컨트롤러 간 차이와 비슷하면 그 비교는 현재 seed 수로 판정 불가.
+        K = np.asarray(K, dtype=float) * (
+            1.0 + gain_jitter * np.random.RandomState(500_000 + seed).uniform(-1.0, 1.0, 4))
     M.CTRL_HI[M.A_SLIDE], M.CTRL_LO[M.A_SLIDE] = FORCE, -FORCE
     base = json.load(open(M.PARAMS / "mm_lqr_gains.json"))
     base.update(over)                       # 어블레이션용 (--k-lat 0 등)
@@ -223,9 +277,32 @@ def main():
                     help="평가 시 잔차 배율 오버라이드 (학습값과 다르게)")
     ap.add_argument("--param-err", type=float, default=0.0,
                     help="플랜트 모델오차 ±비율 (질량·게인·감쇠, 컨트롤러는 명목 유지)")
+    ap.add_argument("--pred-err", type=float, default=0.0,
+                    help="컨트롤러 모델만 ±비율 오차 (플랜트 명목). docs 의 예측기 "
+                         "모델오차 표를 재현하는 축.")
+    ap.add_argument("--seed-from", type=int, default=0,
+                    help="seed 시작값. 튜닝/보고 seed 분리용 (예: --seed-from 20 --seeds 20)")
+    ap.add_argument("--err-sign", choices=("rand", "plus", "minus"), default="rand",
+                    help="rand=seed별 ±추첨(DR 의미) / plus·minus=계통오차(docs '+5%')")
+    ap.add_argument("--err-target", choices=("mass_gain", "slider_mass"),
+                    default="mass_gain", help="흔들 대상. slider_mass=docs 표 재현")
+    ap.add_argument("--pred-err-scope", choices=("all", "predictor"), default="all",
+                    help="all=예측기+LQR게인 둘 다 틀린 모델 / predictor=예측기만 "
+                         "(게인은 명목 — docs 원본 실험 조건)")
+    ap.add_argument("--gain-jitter", type=float, default=0.0,
+                    help="LQR 게인만 ±비율로 흔듦 (모델 무관). 하네스 노이즈 바닥 측정용")
     args = ap.parse_args()
 
     over = {}
+    if args.param_err:
+        over["param_err"] = args.param_err
+    if args.pred_err:
+        over["pred_err"] = args.pred_err
+    if args.gain_jitter:
+        over["gain_jitter"] = args.gain_jitter
+    over["err_sign"] = args.err_sign
+    over["err_target"] = args.err_target
+    over["pred_scope"] = args.pred_err_scope
     if args.lean_max_deg is not None:
         over["lean_max"] = float(np.radians(args.lean_max_deg))
     if args.k_lat is not None:
@@ -237,10 +314,9 @@ def main():
         over["policy"] = args.policy
         if args.res_scale_eval is not None:
             over["res_scale_eval"] = args.res_scale_eval
-    if args.param_err:
-        over["param_err"] = args.param_err
+    seed_ids = range(args.seed_from, args.seed_from + args.seeds)
     tasks = [(i, dms, s, over) for i in range(len(SEVERITIES))
-             for dms in DELAYS_MS for s in range(args.seeds)]
+             for dms in DELAYS_MS for s in seed_ids]
     t0 = time.time()
     runs = []
     if args.workers <= 1:
@@ -269,6 +345,11 @@ def main():
                v_target=V_TARGET, turn_deg=TURN_DEG, turn_t=TURN_T, slew_dps=SLEW_DPS,
                horizon_s=HORIZON_S, physics_hz=round(1 / M.DT), ctrl_hz=round(1 / (CTRL_EVERY * M.DT)),
                force_n=FORCE, stroke_m=STROKE, pert_deg=PERT_DEG, seeds=args.seeds,
+               seed_from=args.seed_from,
+               res_scale_eval=args.res_scale_eval,
+               pred_err=args.pred_err,
+               err_sign=args.err_sign, err_target=args.err_target,
+               pred_err_scope=args.pred_err_scope, gain_jitter=args.gain_jitter,
                severities=[dict(zip(("label", "slope_deg", "mu", "bump_cm"), s))
                            for s in SEVERITIES],
                delays_ms=DELAYS_MS,
